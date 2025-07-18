@@ -1,0 +1,10 @@
+cncera-site/
+├─ index.html       # страница загрузки файлов
+├─ pricing.html     # расчёт стоимости
+├─ login.html       # форма входа / регистрации
+├─ js/
+│   ├─ upload.js
+│   ├─ pricing.js
+│   └─ auth.js
+└─ css/
+    └─ style.css
