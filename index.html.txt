@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CNCera — G-код без CAM</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>CNCera</h1>
+    <p>Автоматическая генерация G-кода по STEP-файлу</p>
+
+    <a class="button" href="https://t.me/CNCeraBot" target="_blank">Перейти в Telegram-бот</a>
+
+    <script src="script.js"></script>
+  </div>
+</body>
+</html>
