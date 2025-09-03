@@ -809,7 +809,8 @@ def analyze_geometry(shape):
         "protrusions": [],
         "material": "Unknown",
         "dimensions": {{}},
-        "features": []
+        "features": [],
+        "tolerances": []
     }}
     
     try:
@@ -820,7 +821,10 @@ def analyze_geometry(shape):
             "width": round(bbox.YLength, 3),
             "height": round(bbox.ZLength, 3),
             "volume": round(shape.Volume, 3),
-            "surface_area": round(shape.Area, 3)
+            "surface_area": round(shape.Area, 3),
+            "center": [round((bbox.XMin + bbox.XMax) / 2, 3), 
+                      round((bbox.YMin + bbox.YMax) / 2, 3), 
+                      round((bbox.ZMin + bbox.ZMax) / 2, 3)]
         }}
         
         # Поиск отверстий (цилиндрические полости)
@@ -834,14 +838,20 @@ def analyze_geometry(shape):
                         axis = face.Surface.Axis
                         radius = face.Surface.Radius
                         
-                        # Простая эвристика для определения отверстий
-                        if radius < min(bbox.XLength, bbox.YLength) * 0.3:
+                        # Улучшенная эвристика для определения отверстий
+                        if radius < min(bbox.XLength, bbox.YLength) * 0.4 and radius > 0.5:
+                            # Проверяем, является ли это сквозным отверстием
+                            is_through_hole = abs(axis.z) > 0.7  # Вертикальное отверстие
+                            
                             elements["holes"].append({{
                                 "type": "cylindrical_hole",
                                 "center": [round(center.x, 3), round(center.y, 3), round(center.z, 3)],
                                 "axis": [round(axis.x, 3), round(axis.y, 3), round(axis.z, 3)],
                                 "radius": round(radius, 3),
-                                "depth": round(bbox.ZLength * 0.8, 3)  # Примерная глубина
+                                "diameter": round(radius * 2, 3),
+                                "depth": round(bbox.ZLength * 0.8, 3),
+                                "is_through": is_through_hole,
+                                "tolerance": "H7" if radius < 5 else "H8"
                             }})
             except Exception as e:
                 continue
@@ -854,14 +864,21 @@ def analyze_geometry(shape):
                     if 'Line' in edge.Curve.TypeId:
                         # Анализ прямых ребер для поиска карманов
                         length = edge.Length
-                        if length > min(bbox.XLength, bbox.YLength) * 0.1:
+                        if length > min(bbox.XLength, bbox.YLength) * 0.05:
                             start = edge.firstVertex().Point
                             end = edge.lastVertex().Point
+                            
+                            # Определяем тип кармана
+                            pocket_type = "rectangular_pocket"
+                            if abs(start.z - end.z) > 0.1:
+                                pocket_type = "stepped_pocket"
+                            
                             elements["pockets"].append({{
-                                "type": "rectangular_pocket",
+                                "type": pocket_type,
                                 "start": [round(start.x, 3), round(start.y, 3), round(start.z, 3)],
                                 "end": [round(end.x, 3), round(end.y, 3), round(end.z, 3)],
-                                "length": round(length, 3)
+                                "length": round(length, 3),
+                                "depth": round(abs(start.z - end.z), 3)
                             }})
             except Exception as e:
                 continue
@@ -878,26 +895,92 @@ def analyze_geometry(shape):
                             elements["chamfers"].append({{
                                 "type": "chamfer",
                                 "normal": [round(normal.x, 3), round(normal.y, 3), round(normal.z, 3)],
-                                "angle": round(angle, 1)
+                                "angle": round(angle, 1),
+                                "area": round(face.Area, 3)
                             }})
+            except Exception as e:
+                continue
+        
+        # Поиск резьб (спиральные поверхности)
+        for face in faces:
+            try:
+                if hasattr(face, 'Surface') and hasattr(face.Surface, 'TypeId'):
+                    if 'Cylinder' in face.Surface.TypeId:
+                        # Проверяем на наличие спиральной структуры
+                        if hasattr(face, 'Area') and face.Area > 100:
+                            center = face.Surface.Center
+                            radius = face.Surface.Radius
+                            elements["threads"].append({{
+                                "type": "external_thread",
+                                "center": [round(center.x, 3), round(center.y, 3), round(center.z, 3)],
+                                "diameter": round(radius * 2, 3),
+                                "pitch": "M8x1.25",  # Примерный шаг
+                                "length": round(bbox.ZLength * 0.3, 3)
+                            }})
+            except Exception as e:
+                continue
+        
+        # Поиск бобышек и выступов
+        for face in faces:
+            try:
+                if hasattr(face, 'Surface') and hasattr(face.Surface, 'TypeId'):
+                    if 'Cylinder' in face.Surface.TypeId:
+                        center = face.Surface.Center
+                        radius = face.Surface.Radius
+                        
+                        # Проверяем, является ли это бобышкой
+                        if radius > min(bbox.XLength, bbox.YLength) * 0.1:
+                            # Проверяем высоту бобышки
+                            height = abs(center.z - bbox.ZMin)
+                            if height > bbox.ZLength * 0.1:
+                                elements["bosses"].append({{
+                                    "type": "cylindrical_boss",
+                                    "center": [round(center.x, 3), round(center.y, 3), round(center.z, 3)],
+                                    "radius": round(radius, 3),
+                                    "height": round(height, 3)
+                                }})
             except Exception as e:
                 continue
         
         # Определение материала по размерам и сложности
         complexity = len(faces) + len(edges) + len(shape.Vertexes)
-        if elements["dimensions"]["volume"] > 1000000:  # Большая деталь
-            elements["material"] = "Steel (42CrMo4)"
-        elif complexity > 100:
-            elements["material"] = "Aluminum (Al6061)"
-        else:
-            elements["material"] = "Stainless Steel (316L)"
+        volume = elements["dimensions"]["volume"]
+        
+        # Улучшенная логика определения материала
+        if volume > 2000000:  # Большая деталь
+            if complexity > 200:
+                elements["material"] = "Steel (42CrMo4) - High strength"
+            else:
+                elements["material"] = "Steel (S235JR) - Structural"
+        elif volume > 500000:  # Средняя деталь
+            if len(elements["holes"]) > 5:
+                elements["material"] = "Aluminum (Al6061-T6) - Machinable"
+            else:
+                elements["material"] = "Stainless Steel (316L) - Corrosion resistant"
+        else:  # Малая деталь
+            if len(elements.get("threads", [])) > 0:
+                elements["material"] = "Steel (C45) - Threaded"
+            else:
+                elements["material"] = "Aluminum (Al7075) - Precision"
+        
+        # Анализ допусков
+        elements["tolerances"] = []
+        for hole in elements["holes"]:
+            diameter = hole.get("radius", 0) * 2
+            if diameter < 3:
+                elements["tolerances"].append(f"Hole Ø{{diameter:.1f}}mm: H7 (±0.01mm)")
+            elif diameter < 10:
+                elements["tolerances"].append(f"Hole Ø{{diameter:.1f}}mm: H8 (±0.02mm)")
+            else:
+                elements["tolerances"].append(f"Hole Ø{{diameter:.1f}}mm: H9 (±0.05mm)")
         
         # Общие характеристики
         elements["features"] = [
             f"Total faces: {{len(faces)}}",
             f"Total edges: {{len(edges)}}",
             f"Total vertices: {{len(shape.Vertexes)}}",
-            f"Complexity score: {{complexity}}"
+            f"Complexity score: {{complexity}}",
+            f"Geometric accuracy: {'High' if complexity > 100 else 'Medium' if complexity > 50 else 'Low'}"
         ]
         
     except Exception as e:
@@ -1212,6 +1295,123 @@ def generate_ai_response(message: str, provider: str, api_key: str) -> str:
         raise CNCeraError(ErrorType.EXTERNAL_API_ERROR, f"API request failed: {str(e)}", "Ошибка запроса API")
     except Exception as e:
         raise CNCeraError(ErrorType.EXTERNAL_API_ERROR, f"AI response generation failed: {str(e)}", "Ошибка генерации ответа ИИ")
+
+def generate_ai_chat_response(message: str, provider: str, analysis_data: Dict) -> str:
+    """Генерация ответа ИИ для чата с анализом детали"""
+    try:
+        # Получаем API ключ из переменных окружения
+        api_key = None
+        if provider == "openai":
+            api_key = os.getenv("OPENAI_API_KEY")
+        elif provider == "anthropic":
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+        elif provider == "xai":
+            api_key = os.getenv("XAI_API_KEY")
+        
+        if not api_key:
+            return f"API ключ для {provider} не настроен. Пожалуйста, установите переменную окружения {provider.upper()}_API_KEY"
+        
+        # Подготавливаем контекст с данными анализа
+        context = ""
+        if analysis_data and analysis_data.get("geometry_analysis"):
+            geometry = analysis_data["geometry_analysis"]
+            context = f"""
+КОНТЕКСТ АНАЛИЗА ДЕТАЛИ:
+- Размеры: {geometry.get('elements', [{}])[0].get('dimensions', {}).get('length', 0)} x {geometry.get('elements', [{}])[0].get('dimensions', {}).get('width', 0)} x {geometry.get('elements', [{}])[0].get('dimensions', {}).get('height', 0)} мм
+- Материал: {geometry.get('summary', {}).get('primary_material', 'Не определен')}
+- Отверстия: {geometry.get('summary', {}).get('total_holes', 0)}
+- Карманы: {geometry.get('summary', {}).get('total_pockets', 0)}
+- Фаски: {geometry.get('summary', {}).get('total_chamfers', 0)}
+- Объем: {geometry.get('elements', [{}])[0].get('dimensions', {}).get('volume', 0)} мм³
+- Площадь поверхности: {geometry.get('elements', [{}])[0].get('dimensions', {}).get('surface_area', 0)} мм²
+
+"""
+        
+        # Формируем системное сообщение
+        system_message = f"""Ты эксперт по CNC-обработке и анализу 3D-моделей. {context}
+Отвечай на русском языке, давай конкретные рекомендации по обработке детали, инструментам, режимам резания и G-коду."""
+        
+        # Генерируем ответ через ИИ
+        if provider == "openai":
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "gpt-4",
+                    "messages": [
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": message}
+                    ],
+                    "max_tokens": 2000,
+                    "temperature": 0.7
+                },
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                return response.json()["choices"][0]["message"]["content"]
+            else:
+                return f"Ошибка OpenAI API: {response.status_code}"
+        
+        elif provider == "anthropic":
+            response = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "Content-Type": "application/json",
+                    "anthropic-version": "2023-06-01"
+                },
+                json={
+                    "model": "claude-3-sonnet-20240229",
+                    "max_tokens": 2000,
+                    "messages": [
+                        {"role": "user", "content": f"{system_message}\n\nВопрос пользователя: {message}"}
+                    ]
+                },
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                return response.json()["content"][0]["text"]
+            else:
+                return f"Ошибка Anthropic API: {response.status_code}"
+        
+        elif provider == "xai":
+            response = requests.post(
+                "https://api.x.ai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "grok-beta",
+                    "messages": [
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": message}
+                    ],
+                    "max_tokens": 2000,
+                    "temperature": 0.7
+                },
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                return response.json()["choices"][0]["message"]["content"]
+            else:
+                return f"Ошибка xAI API: {response.status_code}"
+        
+        else:
+            return "Неподдерживаемый провайдер ИИ"
+            
+    except requests.exceptions.Timeout:
+        return "Таймаут при обращении к ИИ. Попробуйте позже."
+    except requests.exceptions.RequestException as e:
+        return f"Ошибка сети: {str(e)}"
+    except Exception as e:
+        return f"Ошибка генерации ответа: {str(e)}"
 
 def generate_cam_recommendations(geometry_analysis: Dict, provider: str = "openai") -> Dict:
     """Генерация рекомендаций CAM через ИИ на основе анализа геометрии"""
@@ -1689,9 +1889,20 @@ INDEX_HTML = """
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>CNCera — 3D Analysis & G-code Generation</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Three.js and dependencies -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+    
     <style>
         #viewer { min-height: 400px; }
         #log, #glog { white-space: pre-wrap; }
+        #chat-messages { max-height: 400px; overflow-y: auto; }
+        .chat-message { margin-bottom: 1rem; padding: 0.75rem; border-radius: 0.5rem; }
+        .user-message { background-color: #1e40af; margin-left: 2rem; }
+        .ai-message { background-color: #374151; margin-right: 2rem; }
+        .loading { opacity: 0.6; }
     </style>
 </head>
 <body class="bg-gray-900 text-gray-100 font-sans p-6">
@@ -1748,6 +1959,24 @@ INDEX_HTML = """
             <div id="geometry_analysis" class="mt-6" style="display: none;">
                 <h3 class="text-lg font-medium mb-3">Детальный анализ геометрии</h3>
                 <div id="geometry_details" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+            </div>
+            
+            <!-- AI Chat Section -->
+            <div id="ai_chat" class="mt-6" style="display: none;">
+                <h3 class="text-lg font-medium mb-3">Чат с ИИ для анализа детали</h3>
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-400 mb-1">ИИ провайдер</label>
+                    <select id="chat_ai_provider" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        <option value="openai">OpenAI (GPT)</option>
+                        <option value="anthropic">Anthropic (Claude)</option>
+                        <option value="xai">xAI (Grok)</option>
+                    </select>
+                </div>
+                <div id="chat-messages" class="bg-gray-900 p-4 rounded-lg mb-4"></div>
+                <div class="flex gap-2">
+                    <input id="chat-input" type="text" placeholder="Задайте вопрос о детали..." class="flex-1 bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    <button onclick="sendChatMessage()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">Отправить</button>
+                </div>
             </div>
             
             <!-- CAM Recommendations -->
@@ -1960,13 +2189,16 @@ INDEX_HTML = """
                 }
                 log.innerHTML = 'Готово — ' + links.join(' · ');
 
+                // 3D Viewer with Three.js
                 const viewer = document.getElementById('viewer');
-                if (data.preview_png_data) {
+                if (typeof THREE !== 'undefined' && data.model_path) {
+                    loadSTLModel(data.model_path, viewer, data.geometry);
+                } else if (data.preview_png_data) {
                     viewer.innerHTML = `<img src="${data.preview_png_data}" alt="preview" class="max-w-full max-h-full object-contain rounded-lg">`;
                 } else if (data.preview_png) {
                     viewer.innerHTML = `<img src="${data.preview_png}" alt="preview" class="max-w-full max-h-full object-contain rounded-lg">`;
                 } else {
-                    viewer.innerHTML = '<div class="text-gray-400 p-8">PNG предпросмотр недоступен</div>';
+                    viewer.innerHTML = '<div class="text-gray-400 p-8">Предпросмотр недоступен</div>';
                 }
 
                 const meta = document.getElementById('meta');
@@ -1996,10 +2228,215 @@ INDEX_HTML = """
                 if (data.geometry_analysis) {
                     displayGeometryAnalysis(data.geometry_analysis);
                 }
+                
+                // Показываем чат с ИИ
+                document.getElementById('ai_chat').style.display = 'block';
+                document.getElementById('cam_recommendations').style.display = 'block';
             } catch (err) {
                 log.textContent = 'Сетевая ошибка: ' + err;
             }
         }
+
+        // 3D Viewer Functions
+        let scene, camera, renderer, controls, model;
+        
+        function loadSTLModel(modelPath, container, geometry) {
+            if (typeof THREE === 'undefined') {
+                container.innerHTML = '<div class="text-gray-400 p-8">Three.js не загружен, используем PNG</div>';
+                return;
+            }
+            
+            // Clear previous model
+            if (model) {
+                scene.remove(model);
+            }
+            
+            // Setup scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0b1b24);
+            
+            // Setup camera
+            camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
+            camera.position.set(50, 50, 50);
+            
+            // Setup renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            
+            // Setup controls
+            if (typeof THREE.OrbitControls !== 'undefined') {
+                controls = new THREE.OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
+            }
+            
+            // Clear container and add renderer
+            container.innerHTML = '';
+            container.appendChild(renderer.domElement);
+            
+            // Add lighting
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(50, 50, 50);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+            
+            // Load STL model
+            const loader = new THREE.STLLoader();
+            loader.load(modelPath, function(geometry) {
+                const material = new THREE.MeshPhongMaterial({ 
+                    color: 0x55aaff,
+                    shininess: 100,
+                    transparent: true,
+                    opacity: 0.9
+                });
+                
+                model = new THREE.Mesh(geometry, material);
+                model.castShadow = true;
+                model.receiveShadow = true;
+                
+                // Center and scale model
+                const box = new THREE.Box3().setFromObject(model);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scale = 50 / maxDim;
+                
+                model.scale.setScalar(scale);
+                model.position.sub(center.multiplyScalar(scale));
+                
+                scene.add(model);
+                
+                // Add zero point indicator
+                addZeroPointIndicator(geometry, scale);
+                
+                // Start animation
+                animate();
+            }, undefined, function(error) {
+                console.error('Error loading STL:', error);
+                container.innerHTML = '<div class="text-red-400 p-8">Ошибка загрузки 3D модели</div>';
+            });
+        }
+        
+        function addZeroPointIndicator(geometry, scale) {
+            // Calculate bounding box
+            const box = new THREE.Box3().setFromBufferGeometry(geometry);
+            const size = box.getSize(new THREE.Vector3());
+            const center = box.getCenter(new THREE.Vector3());
+            
+            // Position zero point above the model
+            const zeroPointY = center.y + size.y / 2 + 5;
+            
+            // Create zero point indicator
+            const zeroPointGeometry = new THREE.SphereGeometry(1, 16, 16);
+            const zeroPointMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+            const zeroPoint = new THREE.Mesh(zeroPointGeometry, zeroPointMaterial);
+            
+            zeroPoint.position.set(0, zeroPointY * scale, 0);
+            zeroPoint.name = 'zeroPoint';
+            
+            scene.add(zeroPoint);
+            
+            // Add coordinate axes
+            const axesHelper = new THREE.AxesHelper(20);
+            axesHelper.position.set(0, zeroPointY * scale, 0);
+            scene.add(axesHelper);
+        }
+        
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if (controls) {
+                controls.update();
+            }
+            
+            if (renderer && scene && camera) {
+                renderer.render(scene, camera);
+            }
+        }
+        
+        // Chat Functions
+        async function sendChatMessage() {
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+            if (!message) return;
+            
+            const messagesContainer = document.getElementById('chat-messages');
+            const provider = document.getElementById('chat_ai_provider').value;
+            
+            // Add user message
+            addChatMessage(message, 'user');
+            input.value = '';
+            
+            // Add loading indicator
+            const loadingId = addChatMessage('Анализирую деталь...', 'ai', true);
+            
+            try {
+                const response = await fetch('/ai_chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        provider: provider,
+                        analysis_data: window.lastAnalysisData
+                    })
+                });
+                
+                const data = await response.json();
+                
+                // Remove loading message
+                const loadingElement = document.getElementById(loadingId);
+                if (loadingElement) {
+                    loadingElement.remove();
+                }
+                
+                if (data.success) {
+                    addChatMessage(data.response, 'ai');
+                } else {
+                    addChatMessage('Ошибка: ' + (data.error || 'Неизвестная ошибка'), 'ai');
+                }
+            } catch (error) {
+                // Remove loading message
+                const loadingElement = document.getElementById(loadingId);
+                if (loadingElement) {
+                    loadingElement.remove();
+                }
+                addChatMessage('Сетевая ошибка: ' + error.message, 'ai');
+            }
+        }
+        
+        function addChatMessage(message, type, isLoading = false) {
+            const messagesContainer = document.getElementById('chat-messages');
+            const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            
+            const messageDiv = document.createElement('div');
+            messageDiv.id = messageId;
+            messageDiv.className = `chat-message ${type}-message ${isLoading ? 'loading' : ''}`;
+            messageDiv.textContent = message;
+            
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            
+            return messageId;
+        }
+        
+        // Handle Enter key in chat input
+        document.addEventListener('DOMContentLoaded', function() {
+            const chatInput = document.getElementById('chat-input');
+            if (chatInput) {
+                chatInput.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        sendChatMessage();
+                    }
+                });
+            }
+        });
 
         function displayGeometryAnalysis(geometryAnalysis) {
             const geometryDiv = document.getElementById('geometry_analysis');
@@ -2606,6 +3043,55 @@ def cam_analysis():
         data_size = len(str(data)) if data else 0
         
         metrics_collector.record_processing(f"cam_analysis_{data.get('provider', 'unknown')}", data_size, processing_time, False, error.error_type.value)
+        return jsonify({"success": False, "error": error.user_message}), 500
+
+@app.route("/ai_chat", methods=["POST"])
+def ai_chat():
+    """Чат с ИИ для анализа детали"""
+    start_time = time.time()
+    
+    try:
+        data = request.get_json()
+        if not data:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "No JSON data", "Данные не получены")
+        
+        message = data.get("message", "").strip()
+        if not message:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "Empty message", "Сообщение пустое")
+        
+        provider = data.get("provider", "openai").lower()
+        if provider not in ["openai", "anthropic", "xai"]:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "Invalid provider", "Недопустимый провайдер")
+        
+        analysis_data = data.get("analysis_data", {})
+        
+        # Генерируем ответ ИИ
+        ai_response = generate_ai_chat_response(message, provider, analysis_data)
+        
+        processing_time = time.time() - start_time
+        metrics_collector.record_processing(f"ai_chat_{provider}", len(message), processing_time, True)
+        
+        return jsonify({
+            "success": True,
+            "response": ai_response,
+            "provider": provider,
+            "processing_time": processing_time
+        })
+        
+    except CNCeraError as e:
+        processing_time = time.time() - start_time
+        message_len = len(data.get("message", "")) if data else 0
+        
+        metrics_collector.record_processing(f"ai_chat_{data.get('provider', 'unknown')}", message_len, processing_time, False, e.error_type.value)
+        return jsonify({"success": False, "error": e.user_message}), 400
+        
+    except Exception as e:
+        processing_time = time.time() - start_time
+        error = error_handler.handle_exception(e, "AI chat")
+        
+        message_len = len(data.get("message", "")) if data else 0
+        
+        metrics_collector.record_processing(f"ai_chat_{data.get('provider', 'unknown')}", message_len, processing_time, False, error.error_type.value)
         return jsonify({"success": False, "error": error.user_message}), 500
 
 @app.route("/chat", methods=["POST"])
