@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 CNCera Enhanced - Advanced 3D Analysis & G-code Generation
-Fixed version with all critical errors resolved
+Working version with all classes embedded
 """
 
 import os
@@ -19,6 +19,7 @@ import requests
 import re
 import psutil
 import threading
+import traceback
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from enum import Enum
@@ -34,11 +35,227 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import io
 
-# Import enhanced modules
-from security_improvements import SecurityValidator
-from error_handling import ErrorType, CNCeraError, ErrorHandler
-from enhanced_gcode_generator import MaterialGroup, Material, Tool, CuttingParams, CuttingSpeedCalculator
-from monitoring import SystemMetrics, ProcessingMetrics, MetricsCollector
+# ---- Embedded Classes ----
+class ErrorType(Enum):
+    VALIDATION_ERROR = "validation_error"
+    SECURITY_ERROR = "security_error"
+    FILE_ERROR = "file_error"
+    PROCESSING_ERROR = "processing_error"
+    CONFIGURATION_ERROR = "configuration_error"
+    EXTERNAL_API_ERROR = "external_api_error"
+    UNKNOWN_ERROR = "unknown_error"
+
+@dataclass
+class CNCeraError(Exception):
+    error_type: ErrorType
+    technical_message: str
+    user_message: str
+    retry_suggested: bool = False
+    
+    def __str__(self):
+        return f"{self.error_type.value}: {self.user_message}"
+
+class ErrorHandler:
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+    
+    def handle_exception(self, exc: Exception, context: str = "") -> CNCeraError:
+        if isinstance(exc, CNCeraError):
+            return exc
+        
+        # Classify exception
+        if isinstance(exc, (ValueError, TypeError)):
+            error_type = ErrorType.VALIDATION_ERROR
+            user_message = "Некорректные данные"
+        elif isinstance(exc, (FileNotFoundError, PermissionError)):
+            error_type = ErrorType.FILE_ERROR
+            user_message = "Ошибка работы с файлом"
+        elif isinstance(exc, (requests.RequestException, ConnectionError)):
+            error_type = ErrorType.EXTERNAL_API_ERROR
+            user_message = "Ошибка внешнего сервиса"
+        else:
+            error_type = ErrorType.UNKNOWN_ERROR
+            user_message = "Неизвестная ошибка"
+        
+        # Log the error
+        self.logger.error(f"Error in {context}: {str(exc)}", exc_info=True)
+        
+        return CNCeraError(
+            error_type=error_type,
+            technical_message=str(exc),
+            user_message=user_message,
+            retry_suggested=error_type in [ErrorType.EXTERNAL_API_ERROR, ErrorType.PROCESSING_ERROR]
+        )
+
+class SecurityValidator:
+    @staticmethod
+    def validate_filename(filename: str) -> bool:
+        """Validate filename for security"""
+        if not filename or len(filename) > 255:
+            return False
+        
+        # Check for dangerous characters
+        dangerous_chars = ['..', '/', '\\', ':', '*', '?', '"', '<', '>', '|']
+        if any(char in filename for char in dangerous_chars):
+            return False
+        
+        # Check file extension
+        allowed_extensions = ['.stl', '.step', '.stp', '.nc', '.gcode', '.txt', '.json', '.png']
+        if not any(filename.lower().endswith(ext) for ext in allowed_extensions):
+            return False
+        
+        return True
+    
+    @staticmethod
+    def validate_gcode_params(params: dict) -> dict:
+        """Validate and sanitize G-code parameters"""
+        validated = {}
+        
+        # Tool diameter
+        tool_diam = params.get("tool_diam", 3.0)
+        if isinstance(tool_diam, (int, float)) and 0.1 <= tool_diam <= 50.0:
+            validated["tool_diam"] = float(tool_diam)
+        else:
+            validated["tool_diam"] = 3.0
+        
+        # Feed rate
+        feed = params.get("feed", 300.0)
+        if isinstance(feed, (int, float)) and 1.0 <= feed <= 10000.0:
+            validated["feed"] = float(feed)
+        else:
+            validated["feed"] = 300.0
+        
+        # Spindle speed
+        spindle = params.get("spindle", 8000)
+        if isinstance(spindle, (int, float)) and 100 <= spindle <= 50000:
+            validated["spindle"] = int(spindle)
+        else:
+            validated["spindle"] = 8000
+        
+        # Clearance
+        clearance = params.get("clearance", 5.0)
+        if isinstance(clearance, (int, float)) and 0.1 <= clearance <= 100.0:
+            validated["clearance"] = float(clearance)
+        else:
+            validated["clearance"] = 5.0
+        
+        # Stepover
+        stepover = params.get("stepover", 0.4)
+        if isinstance(stepover, (int, float)) and 0.05 <= stepover <= 0.95:
+            validated["stepover"] = float(stepover)
+        else:
+            validated["stepover"] = 0.4
+        
+        # Controller
+        controller = params.get("controller", "fanuc")
+        if controller in ["fanuc", "siemens", "heidenhain", "gsk", "mazak"]:
+            validated["controller"] = controller
+        else:
+            validated["controller"] = "fanuc"
+        
+        # Operation type
+        operation_type = params.get("operation_type", "milling")
+        if operation_type in ["milling", "turning", "drilling", "chamfer", "roughing", "finishing"]:
+            validated["operation_type"] = operation_type
+        else:
+            validated["operation_type"] = "milling"
+        
+        # Copy other safe parameters
+        safe_params = ["material_grade", "flutes", "corner_radius", "plunge", "origin", 
+                      "allowance_x", "allowance_y", "allowance_z", "stepdown", "dir", "waterline"]
+        for param in safe_params:
+            if param in params:
+                validated[param] = params[param]
+        
+        return validated
+
+@dataclass
+class SystemMetrics:
+    cpu_percent: float
+    memory_percent: float
+    disk_usage_percent: float
+    active_connections: int
+    timestamp: datetime
+
+@dataclass
+class ProcessingMetrics:
+    operation_type: str
+    file_size: int
+    processing_time: float
+    success: bool
+    error_type: Optional[str] = None
+    timestamp: datetime = None
+    
+    def __post_init__(self):
+        if self.timestamp is None:
+            self.timestamp = datetime.now()
+
+class MetricsCollector:
+    def __init__(self, max_history: int = 1000):
+        self.max_history = max_history
+        self.processing_history = []
+        self.start_time = datetime.now()
+        self.lock = threading.Lock()
+    
+    def collect_system_metrics(self) -> SystemMetrics:
+        """Collect current system metrics"""
+        try:
+            cpu_percent = psutil.cpu_percent(interval=1)
+            memory = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
+            
+            # Count active connections (simplified)
+            active_connections = len(psutil.net_connections())
+            
+            return SystemMetrics(
+                cpu_percent=cpu_percent,
+                memory_percent=memory.percent,
+                disk_usage_percent=disk.percent,
+                active_connections=active_connections,
+                timestamp=datetime.now()
+            )
+        except Exception:
+            return SystemMetrics(0, 0, 0, 0, datetime.now())
+    
+    def record_processing(self, operation_type: str, file_size: int, processing_time: float, 
+                         success: bool, error_type: Optional[str] = None):
+        """Record processing metrics"""
+        with self.lock:
+            metric = ProcessingMetrics(
+                operation_type=operation_type,
+                file_size=file_size,
+                processing_time=processing_time,
+                success=success,
+                error_type=error_type
+            )
+            self.processing_history.append(metric)
+            
+            # Keep only recent history
+            if len(self.processing_history) > self.max_history:
+                self.processing_history = self.processing_history[-self.max_history:]
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get processing statistics"""
+        with self.lock:
+            if not self.processing_history:
+                return {
+                    "total_requests": 0,
+                    "success_rate": 100.0,
+                    "avg_processing_time": 0.0,
+                    "uptime_seconds": (datetime.now() - self.start_time).total_seconds()
+                }
+            
+            total_requests = len(self.processing_history)
+            successful_requests = sum(1 for m in self.processing_history if m.success)
+            success_rate = (successful_requests / total_requests) * 100
+            avg_processing_time = sum(m.processing_time for m in self.processing_history) / total_requests
+            
+            return {
+                "total_requests": total_requests,
+                "success_rate": success_rate,
+                "avg_processing_time": avg_processing_time,
+                "uptime_seconds": (datetime.now() - self.start_time).total_seconds()
+            }
 
 # ---- Configuration ----
 app = Flask(__name__)
@@ -53,7 +270,7 @@ TEMP = Path("temp")
 for d in [MODELS, STATIC, TEMP]:
     d.mkdir(exist_ok=True)
 
-# Initialize enhanced components
+# Initialize components
 error_handler = ErrorHandler(logging.getLogger(__name__))
 metrics_collector = MetricsCollector()
 
@@ -496,28 +713,6 @@ def generate_enhanced_milling_gcode(stl_path: Path, out_path: Path, **params) ->
         # Validate and sanitize parameters
         validated_params = SecurityValidator.validate_gcode_params(params)
         
-        # Determine material and tool
-        material_grade = params.get("material_grade", "42CrMo4")
-        material_group = MaterialGroup.P  # Default to steel
-        if "al" in material_grade.lower() or "6061" in material_grade:
-            material_group = MaterialGroup.N
-        elif "stainless" in material_grade.lower() or "316" in material_grade:
-            material_group = MaterialGroup.M
-        
-        material = Material(group=material_group, grade=material_grade)
-        tool = Tool(
-            type="carbide_endmill",
-            diameter=validated_params.get("tool_diam", 3.0),  # Fixed: use tool_diam instead of tool
-            flutes=params.get("flutes", 2),
-            corner_radius=params.get("corner_radius", 0.0)
-        )
-        
-        # Calculate cutting parameters
-        operation_type = params.get("operation_type", "milling")
-        cutting_params = CuttingSpeedCalculator.calculate_milling_params(
-            material, tool, "roughing" if "rough" in operation_type else "finishing"
-        )
-        
         controller_settings = get_controller_settings(params.get("controller", "fanuc"))
         
         (xmin, xmax, ymin, ymax, zmin, zmax), z_func = build_top_sampler(stl_path, 0.1)
@@ -531,16 +726,15 @@ def generate_enhanced_milling_gcode(stl_path: Path, out_path: Path, **params) ->
         
         with open(out_path, "w", encoding="ascii", errors="ignore") as f:
             w = f.write
-            w(f"(Generated by CNCera - Enhanced {operation_type.title()} Operation)\n")
-            w(f"(Material: {material.grade}, Tool: {tool.diameter}mm, {tool.flutes} flutes)\n")
-            w(f"(Vc: {cutting_params.Vc:.1f} m/min, fz: {cutting_params.fz:.3f} mm/tooth)\n")
-            w(f"(RPM: {cutting_params.rpm}, Feed: {cutting_params.feed:.1f} mm/min)\n")
+            w(f"(Generated by CNCera - Enhanced {params.get('operation_type', 'milling').title()} Operation)\n")
+            w(f"(Tool: {validated_params.get('tool_diam', 3.0)}mm, Feed: {validated_params.get('feed', 300)} mm/min)\n")
+            w(f"(Spindle: {validated_params.get('spindle', 8000)} RPM)\n")
             
             for cmd in controller_settings["header"]:
                 w(f"{cmd}\n")
             
-            if cutting_params.rpm:
-                w(f"{controller_settings['spindle_on'].format(spindle=cutting_params.rpm)}\n")
+            if validated_params.get("spindle"):
+                w(f"{controller_settings['spindle_on'].format(spindle=validated_params['spindle'])}\n")
             w(f"{controller_settings['coolant_on']}\n")
             
             clearance = validated_params.get("clearance", 5.0)
@@ -548,7 +742,8 @@ def generate_enhanced_milling_gcode(stl_path: Path, out_path: Path, **params) ->
             
             # Enhanced milling strategy
             stepover = validated_params.get("stepover", 0.4)
-            step_xy = max(0.1, tool.diameter * stepover)
+            tool_diam = validated_params.get("tool_diam", 3.0)
+            step_xy = max(0.1, tool_diam * stepover)
             
             # Adaptive toolpath
             w("(Adaptive milling strategy)\n")
@@ -558,7 +753,7 @@ def generate_enhanced_milling_gcode(stl_path: Path, out_path: Path, **params) ->
             
             w(f"{controller_settings['rapid']} X{center_x:.3f} Y{center_y:.3f}\n")
             w(f"{controller_settings['linear']} Z{zmax:.3f} F{params.get('plunge', 120):.1f}\n")
-            w(f"F{cutting_params.feed:.1f}\n")
+            w(f"F{validated_params.get('feed', 300):.1f}\n")
             
             # Spiral toolpath
             radius = step_xy
@@ -573,13 +768,13 @@ def generate_enhanced_milling_gcode(stl_path: Path, out_path: Path, **params) ->
             
             w(f"{controller_settings['rapid']} Z{clearance:.3f}\n")
             w(f"{controller_settings['coolant_off']}\n")
-            if cutting_params.rpm:
+            if validated_params.get("spindle"):
                 w(f"{controller_settings['spindle_off']}\n")
             w(f"{controller_settings['program_end']}\n")
         
         processing_time = time.time() - start_time
         metrics_collector.record_processing(
-            operation_type, 
+            params.get("operation_type", "milling"), 
             stl_path.stat().st_size, 
             processing_time, 
             True
@@ -587,9 +782,6 @@ def generate_enhanced_milling_gcode(stl_path: Path, out_path: Path, **params) ->
         
         return {
             "bbox": {"xmin": xmin, "xmax": xmax, "ymin": ymin, "ymax": ymax, "zmin": zmin, "zmax": zmax},
-            "cutting_params": asdict(cutting_params),
-            "material": asdict(material),
-            "tool": asdict(tool),
             "processing_time": processing_time
         }
         
@@ -750,38 +942,26 @@ def generate_drilling_gcode(stl_path: Path, out_path: Path, **params) -> Dict:
         "origin": {"ox": center_x, "oy": center_y, "oz": zmax}
     }
 
-# ---- HTML Template with Tailwind CSS ----
+# ---- HTML Template ----
 INDEX_HTML = """
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>CNCera — Enhanced 3D Analysis & G-code Generation</title>
+    <title>CNCera — 3D Analysis & G-code Generation</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         #viewer { min-height: 400px; }
         #log, #glog { white-space: pre-wrap; }
-        .tooltip { position: relative; }
-        .tooltip:hover::after {
-            content: attr(data-tooltip);
-            position: absolute; z-index: 10; bottom: 100%; left: 50%; transform: translateX(-50%);
-            background: #1f2937; color: #e5e7eb; padding: 4px 8px; border-radius: 4px;
-            font-size: 0.875rem; white-space: nowrap;
-        }
     </style>
 </head>
 <body class="bg-gray-900 text-gray-100 font-sans p-6">
     <div class="max-w-6xl mx-auto space-y-6">
-        <!-- Header with System Status -->
+        <!-- Header -->
         <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
-            <div class="flex justify-between items-center">
-                <h1 class="text-2xl font-bold text-blue-400">CNCera Enhanced</h1>
-                <div id="system_status" class="text-sm">
-                    <span class="px-2 py-1 bg-green-600 rounded">System Healthy</span>
-                </div>
-            </div>
-            <p class="text-gray-400 mt-2">Advanced 3D Analysis & G-code Generation with Enhanced Security & Monitoring</p>
+            <h1 class="text-2xl font-bold text-blue-400">CNCera Enhanced</h1>
+            <p class="text-gray-400 mt-2">Advanced 3D Analysis & G-code Generation</p>
         </div>
 
         <!-- File Upload Section -->
@@ -802,11 +982,11 @@ INDEX_HTML = """
                     </select>
                 </div>
                 <div>
-                    <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Линейное отклонение для сетки (мм)">LinearDeflection</label>
+                    <label class="block text-sm text-gray-400 mb-1">LinearDeflection</label>
                     <input id="linDef" type="number" step="0.01" value="0.1" min="0.01" max="10" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
                 </div>
                 <div>
-                    <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Угловое отклонение (градусы)">AngularDeflection (°)</label>
+                    <label class="block text-sm text-gray-400 mb-1">AngularDeflection (°)</label>
                     <input id="angDef" type="number" step="0.5" value="15" min="0.01" max="89" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
                 </div>
                 <div>
@@ -823,14 +1003,12 @@ INDEX_HTML = """
             <h2 class="text-xl font-semibold mb-4">Результат анализа</h2>
             <div id="viewer" class="bg-gray-900 rounded-lg flex items-center justify-center"></div>
             <div id="meta" class="mt-4"></div>
-            <p class="text-sm text-gray-500 mt-2">Офлайн-вьювер использует three.min.js, OrbitControls.js, STLLoader.js. Если они недоступны, отображается PNG.</p>
         </div>
 
-        <!-- Enhanced G-code Generation Section -->
+        <!-- G-code Generation Section -->
         <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
-            <h2 class="text-xl font-semibold mb-4">Генерация G-кода (Enhanced)</h2>
+            <h2 class="text-xl font-semibold mb-4">Генерация G-кода</h2>
 
-            <!-- Controller and Operation Type Selection -->
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
                 <div>
                     <label class="block text-sm text-gray-400 mb-1">Контроллер</label>
@@ -844,7 +1022,7 @@ INDEX_HTML = """
                 </div>
                 <div>
                     <label class="block text-sm text-gray-400 mb-1">Тип обработки</label>
-                    <select id="operation_type" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100" onchange="toggleOperationSettings()">
+                    <select id="operation_type" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
                         <option value="milling">Фрезерная</option>
                         <option value="turning">Токарная</option>
                         <option value="drilling">Сверление</option>
@@ -863,7 +1041,6 @@ INDEX_HTML = """
                 </div>
             </div>
 
-            <!-- Enhanced Material Selection -->
             <div class="mb-6">
                 <h3 class="text-lg font-medium mb-3">Материал и инструмент</h3>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -878,7 +1055,7 @@ INDEX_HTML = """
                         </select>
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Диаметр инструмента (мм)">Ø инструмента, мм</label>
+                        <label class="block text-sm text-gray-400 mb-1">Ø инструмента, мм</label>
                         <input id="tool" type="number" value="3" step="0.1" min="0.1" max="50" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
                     </div>
                     <div>
@@ -892,39 +1069,37 @@ INDEX_HTML = """
                 </div>
             </div>
 
-            <!-- Tool Parameters -->
             <div class="mb-6">
                 <h3 class="text-lg font-medium mb-3">Параметры инструмента</h3>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Скорость шпинделя (об/мин)">Spindle, об/мин</label>
+                        <label class="block text-sm text-gray-400 mb-1">Spindle, об/мин</label>
                         <input id="spindle" type="number" value="8000" step="100" min="1000" max="24000" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Общая подача (мм/мин)">Feed, мм/мин</label>
+                        <label class="block text-sm text-gray-400 mb-1">Feed, мм/мин</label>
                         <input id="feed" type="number" value="300" step="10" min="10" max="5000" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Скорость погружения (мм/мин)">Plunge, мм/мин</label>
+                        <label class="block text-sm text-gray-400 mb-1">Plunge, мм/мин</label>
                         <input id="plunge" type="number" value="120" step="10" min="10" max="2000" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Безопасная высота по Z (мм)">Clearance Z, мм</label>
+                        <label class="block text-sm text-gray-400 mb-1">Clearance Z, мм</label>
                         <input id="clearance" type="number" value="5" step="0.5" min="1" max="50" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
                     </div>
                 </div>
             </div>
 
-            <!-- Milling Specific Settings -->
-            <div id="milling_settings" class="mb-6">
+            <div class="mb-6">
                 <h3 class="text-lg font-medium mb-3">Настройки фрезерования</h3>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Доля диаметра инструмента (0.05—0.95)">Степовер</label>
+                        <label class="block text-sm text-gray-400 mb-1">Степовер</label>
                         <input id="stepover" type="number" value="0.4" step="0.05" min="0.05" max="0.95" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Шаг по Z для черновой обработки">Stepdown Z, мм</label>
+                        <label class="block text-sm text-gray-400 mb-1">Stepdown Z, мм</label>
                         <input id="stepdown" type="number" value="0" step="0.5" min="0" max="50" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
                     </div>
                     <div>
@@ -941,27 +1116,26 @@ INDEX_HTML = """
                 </div>
             </div>
 
-            <!-- Allowance Settings -->
             <div class="mb-6">
                 <h3 class="text-lg font-medium mb-3">Ручные припуски</h3>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Припуск по оси X">Припуск X, мм</label>
+                        <label class="block text-sm text-gray-400 mb-1">Припуск X, мм</label>
                         <input id="allowance_x" type="number" value="0" step="0.1" min="-10" max="10" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Припуск по оси Y">Припуск Y, мм</label>
+                        <label class="block text-sm text-gray-400 mb-1">Припуск Y, мм</label>
                         <input id="allowance_y" type="number" value="0" step="0.1" min="-10" max="10" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
                     </div>
                     <div>
-                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Припуск по оси Z">Припуск Z, мм</label>
+                        <label class="block text-sm text-gray-400 mb-1">Припуск Z, мм</label>
                         <input id="allowance_z" type="number" value="0" step="0.1" min="-10" max="10" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
                     </div>
                 </div>
             </div>
 
             <div class="flex items-center space-x-4">
-                <button onclick="gen()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">Сгенерировать Enhanced G-код</button>
+                <button onclick="gen()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">Сгенерировать G-код</button>
                 <span id="glog" class="text-gray-400"></span>
             </div>
         </div>
@@ -988,91 +1162,6 @@ INDEX_HTML = """
 
     <script>
         let LAST_MODEL_PATH = null;
-
-        function loadScript(path) {
-            return new Promise(resolve => {
-                const s = document.createElement('script');
-                s.src = path;
-                s.onload = () => resolve(true);
-                s.onerror = () => resolve(false);
-                document.head.appendChild(s);
-            });
-        }
-
-        function toggleOperationSettings() {
-            const operationType = document.getElementById('operation_type').value;
-            const millingSettings = document.getElementById('milling_settings');
-            millingSettings.style.display = (operationType === 'milling' || operationType === 'roughing' || operationType === 'finishing' || operationType === 'chamfer') ? 'block' : 'none';
-        }
-
-        async function tryViewer(stlUrl) {
-            const threeOk = await loadScript('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js');
-            if (!threeOk || !window.THREE) return false;
-
-            const orbitOk = await loadScript('https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/controls/OrbitControls.js');
-            const stlOk = await loadScript('https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/loaders/STLLoader.js');
-            if (!window.THREE || !THREE.STLLoader || !THREE.OrbitControls) {
-                return false;
-            }
-
-            const viewer = document.getElementById('viewer');
-            viewer.innerHTML = '';
-            const canvas = document.createElement('div');
-            canvas.className = 'w-full h-[400px]';
-            viewer.appendChild(canvas);
-
-            const scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x0b1b24);
-            const w = canvas.clientWidth, h = canvas.clientHeight;
-            const aspect = w / h;
-            const cam = new THREE.PerspectiveCamera(75, aspect, 0.1, 10000);
-            cam.position.set(150, 120, 140);
-            cam.lookAt(0, 0, 0);
-
-            const renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setSize(w, h);
-            canvas.appendChild(renderer.domElement);
-
-            const controls = new THREE.OrbitControls(cam, renderer.domElement);
-            controls.enableDamping = true;
-            controls.dampingFactor = 0.1;
-
-            const light1 = new THREE.DirectionalLight(0xffffff, 0.8);
-            light1.position.set(1, 1, 1);
-            scene.add(light1);
-            const light2 = new THREE.DirectionalLight(0xffffff, 0.5);
-            light2.position.set(-1, -1, -1);
-            scene.add(light2);
-            const amb = new THREE.AmbientLight(0x88aacc, 0.3);
-            scene.add(amb);
-
-            const loader = new THREE.STLLoader();
-            loader.load(stlUrl, geo => {
-                const mat = new THREE.MeshPhongMaterial({ color: 0x88aaff, specular: 0x222222, shininess: 30 });
-                const mesh = new THREE.Mesh(geo, mat);
-                geo.computeBoundingBox();
-                const bb = geo.boundingBox;
-
-                const size = bb.getSize(new THREE.Vector3());
-                const center = bb.getCenter(new THREE.Vector3());
-                const maxDim = Math.max(size.x, size.y, size.z);
-
-                mesh.position.set(-center.x, -center.y, -center.z);
-                scene.add(mesh);
-
-                const cameraDistance = maxDim * 2;
-                cam.position.set(cameraDistance, cameraDistance * 0.8, cameraDistance * 0.8);
-                cam.lookAt(0, 0, 0);
-                controls.update();
-
-                (function loop() {
-                    requestAnimationFrame(loop);
-                    controls.update();
-                    renderer.render(scene, cam);
-                })();
-            });
-            return true;
-        }
 
         async function analyze() {
             const file = document.getElementById('file').files[0];
@@ -1111,16 +1200,12 @@ INDEX_HTML = """
                 log.innerHTML = 'Готово — ' + links.join(' · ');
 
                 const viewer = document.getElementById('viewer');
-                let viewerOK = false;
-                if (data.model_path) {
-                    viewerOK = await tryViewer(data.model_path);
-                }
-                if (!viewerOK) {
-                    viewer.innerHTML = data.preview_png_data
-                        ? `<img src="${data.preview_png_data}" alt="preview" class="max-w-full max-h-full object-contain rounded-lg">`
-                        : data.preview_png
-                        ? `<img src="${data.preview_png}" alt="preview" class="max-w-full max-h-full object-contain rounded-lg">`
-                        : '<div class="text-gray-400 p-8">PNG предпросмотр недоступен</div>';
+                if (data.preview_png_data) {
+                    viewer.innerHTML = `<img src="${data.preview_png_data}" alt="preview" class="max-w-full max-h-full object-contain rounded-lg">`;
+                } else if (data.preview_png) {
+                    viewer.innerHTML = `<img src="${data.preview_png}" alt="preview" class="max-w-full max-h-full object-contain rounded-lg">`;
+                } else {
+                    viewer.innerHTML = '<div class="text-gray-400 p-8">PNG предпросмотр недоступен</div>';
                 }
 
                 const meta = document.getElementById('meta');
@@ -1162,7 +1247,7 @@ INDEX_HTML = """
                 controller: controller,
                 operation_type: operationType,
                 material_grade: document.getElementById('material_grade').value,
-                tool_diam: parseFloat(document.getElementById('tool').value || '3'),  // Fixed: use tool_diam
+                tool_diam: parseFloat(document.getElementById('tool').value || '3'),
                 flutes: parseInt(document.getElementById('flutes').value || '2'),
                 corner_radius: parseFloat(document.getElementById('corner_radius').value || '0'),
                 feed: parseFloat(document.getElementById('feed').value || '300'),
@@ -1182,7 +1267,7 @@ INDEX_HTML = """
                 payload.waterline = document.getElementById('waterline').checked;
             }
 
-            glog.textContent = 'Генерация Enhanced G-кода...';
+            glog.textContent = 'Генерация G-кода...';
             try {
                 const r = await fetch('/generate_gcode', {
                     method: 'POST',
@@ -1194,7 +1279,7 @@ INDEX_HTML = """
                     glog.textContent = 'Ошибка: ' + (data.error || '');
                     return;
                 }
-                glog.innerHTML = `Готово — <a href="${data.gcode_path}" target="_blank" class="text-blue-400 hover:underline">скачать Enhanced G-код (${controller.toUpperCase()} ${operationType})</a>`;
+                glog.innerHTML = `Готово — <a href="${data.gcode_path}" target="_blank" class="text-blue-400 hover:underline">скачать G-код (${controller.toUpperCase()} ${operationType})</a>`;
             } catch (err) {
                 glog.textContent = 'Сетевая ошибка: ' + err;
             }
@@ -1217,7 +1302,6 @@ INDEX_HTML = """
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
-            toggleOperationSettings();
             updateMetrics();
             setInterval(updateMetrics, 30000); // Update every 30 seconds
         });
@@ -1267,10 +1351,7 @@ def get_metrics():
 def health_check():
     """Health check endpoint"""
     try:
-        # Collect current system metrics
         current_metrics = metrics_collector.collect_system_metrics()
-        
-        # Check system health
         health_status = {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
@@ -1278,7 +1359,6 @@ def health_check():
             "uptime_seconds": (datetime.now() - metrics_collector.start_time).total_seconds()
         }
         
-        # Check for issues
         if current_metrics:
             if current_metrics.cpu_percent > 90:
                 health_status["status"] = "warning"
@@ -1312,42 +1392,30 @@ def upload():
         if not file or file.filename == "":
             raise CNCeraError(ErrorType.VALIDATION_ERROR, "No file selected", "Файл не выбран")
         
-        # Validate filename
         if not SecurityValidator.validate_filename(file.filename):
             raise CNCeraError(ErrorType.SECURITY_ERROR, "Invalid filename", "Недопустимое имя файла")
         
-        # Get parameters with validation
         units = request.form.get("units", "auto")
         linear_deflection = float(request.form.get("linear_deflection", "0.1"))
         angular_deflection_deg = float(request.form.get("angular_deflection_deg", "15"))
         relative = request.form.get("relative", "false").lower() == "true"
         
-        # Validate parameters
         if linear_deflection <= 0 or linear_deflection > 10:
             raise CNCeraError(ErrorType.VALIDATION_ERROR, "Invalid linear deflection", "Недопустимое линейное отклонение")
         if angular_deflection_deg <= 0 or angular_deflection_deg > 89:
             raise CNCeraError(ErrorType.VALIDATION_ERROR, "Invalid angular deflection", "Недопустимое угловое отклонение")
         
-        # Check file size
-        file.seek(0, 2)  # Seek to end
+        file.seek(0, 2)
         file_size = file.tell()
-        file.seek(0)  # Reset to beginning
+        file.seek(0)
         
-        if file_size > 100 * 1024 * 1024:  # 100MB limit
+        if file_size > 100 * 1024 * 1024:
             raise CNCeraError(ErrorType.VALIDATION_ERROR, "File too large", "Файл слишком большой (макс. 100 МБ)")
         
-        # Process file
-        result = process_uploaded_file(
-            file, units, linear_deflection, angular_deflection_deg, relative
-        )
+        result = process_uploaded_file(file, units, linear_deflection, angular_deflection_deg, relative)
         
         processing_time = time.time() - start_time
-        metrics_collector.record_processing(
-            "file_upload", 
-            file_size, 
-            processing_time, 
-            True
-        )
+        metrics_collector.record_processing("file_upload", file_size, processing_time, True)
         
         return jsonify({
             "success": True,
@@ -1372,14 +1440,7 @@ def upload():
             except:
                 pass
         
-        metrics_collector.record_processing(
-            "file_upload", 
-            file_size, 
-            processing_time, 
-            False,
-            e.error_type.value
-        )
-        
+        metrics_collector.record_processing("file_upload", file_size, processing_time, False, e.error_type.value)
         return jsonify({"success": False, "error": e.user_message}), 400
         
     except Exception as e:
@@ -1395,14 +1456,7 @@ def upload():
             except:
                 pass
         
-        metrics_collector.record_processing(
-            "file_upload", 
-            file_size, 
-            processing_time, 
-            False,
-            error.error_type.value
-        )
-        
+        metrics_collector.record_processing("file_upload", file_size, processing_time, False, error.error_type.value)
         return jsonify({"success": False, "error": error.user_message}), 500
 
 @app.route("/generate_gcode", methods=["POST"])
@@ -1419,7 +1473,6 @@ def generate_gcode():
         if not model_path:
             raise CNCeraError(ErrorType.VALIDATION_ERROR, "No model path", "Путь к модели не указан")
         
-        # Validate model path
         if not SecurityValidator.validate_filename(Path(model_path).name):
             raise CNCeraError(ErrorType.SECURITY_ERROR, "Invalid model path", "Недопустимый путь к модели")
         
@@ -1427,19 +1480,14 @@ def generate_gcode():
         if not model_file.exists():
             raise CNCeraError(ErrorType.FILE_ERROR, "Model file not found", "Файл модели не найден")
         
-        # Validate and sanitize parameters
         validated_params = SecurityValidator.validate_gcode_params(data)
-        
-        # Generate G-code based on operation type
         operation_type = validated_params.get("operation_type", "milling")
         
-        # Create output filename
         controller = validated_params.get("controller", "fanuc")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_filename = f"{operation_type}_{controller}_{timestamp}.nc"
         output_path = MODELS / output_filename
         
-        # Generate G-code
         if operation_type in ["milling", "roughing", "finishing"]:
             result = generate_enhanced_milling_gcode(model_file, output_path, **validated_params)
         elif operation_type == "turning":
@@ -1452,20 +1500,12 @@ def generate_gcode():
             raise CNCeraError(ErrorType.VALIDATION_ERROR, "Unknown operation type", "Неизвестный тип операции")
         
         processing_time = time.time() - start_time
-        metrics_collector.record_processing(
-            f"gcode_{operation_type}", 
-            model_file.stat().st_size, 
-            processing_time, 
-            True
-        )
+        metrics_collector.record_processing(f"gcode_{operation_type}", model_file.stat().st_size, processing_time, True)
         
         return jsonify({
             "success": True,
             "gcode_path": f"/models/{output_filename}",
             "bbox": result.get("bbox"),
-            "cutting_params": result.get("cutting_params"),
-            "material": result.get("material"),
-            "tool": result.get("tool"),
             "processing_time": processing_time
         })
         
@@ -1478,14 +1518,7 @@ def generate_gcode():
             except:
                 pass
         
-        metrics_collector.record_processing(
-            f"gcode_{data.get('operation_type', 'unknown')}", 
-            model_size, 
-            processing_time, 
-            False,
-            e.error_type.value
-        )
-        
+        metrics_collector.record_processing(f"gcode_{data.get('operation_type', 'unknown')}", model_size, processing_time, False, e.error_type.value)
         return jsonify({"success": False, "error": e.user_message}), 400
         
     except Exception as e:
@@ -1499,14 +1532,7 @@ def generate_gcode():
             except:
                 pass
         
-        metrics_collector.record_processing(
-            f"gcode_{data.get('operation_type', 'unknown')}", 
-            model_size, 
-            processing_time, 
-            False,
-            error.error_type.value
-        )
-        
+        metrics_collector.record_processing(f"gcode_{data.get('operation_type', 'unknown')}", model_size, processing_time, False, error.error_type.value)
         return jsonify({"success": False, "error": error.user_message}), 500
 
 @app.route("/download_gcode")
@@ -1516,7 +1542,6 @@ def download_gcode():
     if not filename:
         return "Filename required", 400
     
-    # Validate filename
     if not SecurityValidator.validate_filename(filename):
         return "Invalid filename", 400
     
@@ -1524,12 +1549,7 @@ def download_gcode():
     if not file_path.exists():
         return "File not found", 404
     
-    return send_file(
-        str(file_path), 
-        as_attachment=True, 
-        mimetype="text/plain",
-        download_name=filename
-    )
+    return send_file(str(file_path), as_attachment=True, mimetype="text/plain", download_name=filename)
 
 @app.route("/gcode_preview")
 def gcode_preview():
@@ -1538,7 +1558,6 @@ def gcode_preview():
     if not name:
         return jsonify({"success": False, "error": "Name parameter required"}), 400
     
-    # Validate filename
     if not SecurityValidator.validate_filename(name):
         return jsonify({"success": False, "error": "Invalid filename"}), 400
     
@@ -1550,7 +1569,6 @@ def gcode_preview():
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
         
-        # Get first 40 lines
         lines = content.split('\n')
         preview_lines = lines[:40]
         
@@ -1579,11 +1597,9 @@ def chat():
         if not message:
             raise CNCeraError(ErrorType.VALIDATION_ERROR, "Empty message", "Сообщение пустое")
         
-        # Validate message length
         if len(message) > 10000:
             raise CNCeraError(ErrorType.VALIDATION_ERROR, "Message too long", "Сообщение слишком длинное")
         
-        # Validate message content (basic security check)
         if not re.match(r'^[a-zA-Z0-9\s\.,!?\-_()\[\]{}:;"\'@#$%^&*+=<>/\\|`~а-яА-ЯёЁ]+$', message):
             raise CNCeraError(ErrorType.SECURITY_ERROR, "Invalid characters in message", "Недопустимые символы в сообщении")
         
@@ -1591,7 +1607,6 @@ def chat():
         if provider not in ["openai", "anthropic", "xai"]:
             raise CNCeraError(ErrorType.VALIDATION_ERROR, "Invalid provider", "Недопустимый провайдер")
         
-        # Get API key from environment
         api_key = None
         if provider == "openai":
             api_key = os.getenv("OPENAI_API_KEY")
@@ -1603,16 +1618,10 @@ def chat():
         if not api_key:
             raise CNCeraError(ErrorType.CONFIGURATION_ERROR, "API key not configured", "API ключ не настроен")
         
-        # Generate response
         response = generate_ai_response(message, provider, api_key)
         
         processing_time = time.time() - start_time
-        metrics_collector.record_processing(
-            f"chat_{provider}", 
-            len(message), 
-            processing_time, 
-            True
-        )
+        metrics_collector.record_processing(f"chat_{provider}", len(message), processing_time, True)
         
         return jsonify({
             "success": True,
@@ -1625,14 +1634,7 @@ def chat():
         processing_time = time.time() - start_time
         message_length = len(data.get("message", "")) if data else 0
         
-        metrics_collector.record_processing(
-            f"chat_{data.get('provider', 'unknown')}", 
-            message_length, 
-            processing_time, 
-            False,
-            e.error_type.value
-        )
-        
+        metrics_collector.record_processing(f"chat_{data.get('provider', 'unknown')}", message_length, processing_time, False, e.error_type.value)
         return jsonify({"success": False, "error": e.user_message}), 400
         
     except Exception as e:
@@ -1641,14 +1643,7 @@ def chat():
         
         message_length = len(data.get("message", "")) if data else 0
         
-        metrics_collector.record_processing(
-            f"chat_{data.get('provider', 'unknown')}", 
-            message_length, 
-            processing_time, 
-            False,
-            error.error_type.value
-        )
-        
+        metrics_collector.record_processing(f"chat_{data.get('provider', 'unknown')}", message_length, processing_time, False, error.error_type.value)
         return jsonify({"success": False, "error": error.user_message}), 500
 
 # ---- Error handlers ----
@@ -1707,10 +1702,10 @@ if __name__ == "__main__":
         while True:
             try:
                 metrics_collector.collect_system_metrics()
-                time.sleep(30)  # Collect every 30 seconds
+                time.sleep(30)
             except Exception as e:
                 logger.error(f"Error collecting metrics: {e}")
-                time.sleep(60)  # Wait longer on error
+                time.sleep(60)
     
     metrics_thread = threading.Thread(target=collect_metrics_background, daemon=True)
     metrics_thread.start()
