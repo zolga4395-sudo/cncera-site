@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+"""
+CNCera Enhanced - Advanced 3D Analysis & G-code Generation
+Fixed version with all critical errors resolved
+"""
+
 import os
 import sys
 import json
@@ -14,931 +20,474 @@ import re
 import psutil
 import threading
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict, Any
 from dataclasses import dataclass, asdict
 from enum import Enum
-from collections import defaultdict, deque
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_from_directory, send_file, render_template_string
-from werkzeug.utils import secure_filename
+from collections import defaultdict
+from datetime import datetime
+from typing import Dict, Any, Optional, Tuple, List
 
-# ---- Enhanced Imports and Classes ----
-class MaterialGroup(Enum):
-    """Группы материалов по ISO"""
-    P = "P"  # Сталь
-    M = "M"  # Нержавеющая сталь
-    K = "K"  # Чугун
-    N = "N"  # Алюминий
-    S = "S"  # Титан/никелевые сплавы
-    H = "H"  # Закаленная сталь
+import flask
+from flask import Flask, request, jsonify, send_file, send_from_directory, render_template_string
+import numpy as np
+from stl import mesh
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+import io
 
-class ErrorType(Enum):
-    """Типы ошибок в системе"""
-    FILE_NOT_FOUND = "file_not_found"
-    INVALID_FORMAT = "invalid_format"
-    PROCESSING_ERROR = "processing_error"
-    VALIDATION_ERROR = "validation_error"
-    SYSTEM_ERROR = "system_error"
-    TIMEOUT_ERROR = "timeout_error"
-    PERMISSION_ERROR = "permission_error"
+# Import enhanced modules
+from security_improvements import SecurityValidator
+from error_handling import ErrorType, CNCeraError, ErrorHandler
+from enhanced_gcode_generator import MaterialGroup, Material, Tool, CuttingParams, CuttingSpeedCalculator
+from monitoring import SystemMetrics, ProcessingMetrics, MetricsCollector
 
-@dataclass
-class Material:
-    """Характеристики материала"""
-    group: MaterialGroup
-    grade: str
-    hardness: Optional[str] = None
-    notes: str = ""
-
-@dataclass
-class Tool:
-    """Характеристики инструмента"""
-    type: str
-    diameter: float
-    flutes: int
-    corner_radius: float = 0.0
-    insert_type: str = ""
-    coating: str = ""
-    holder: str = ""
-    stickout: float = 0.0
-
-@dataclass
-class CuttingParams:
-    """Параметры резания"""
-    Vc: float  # Скорость резания, м/мин
-    fz: float  # Подача на зуб, мм/зуб
-    fn: float  # Подача на оборот, мм/об
-    rpm: int   # Обороты шпинделя
-    feed: float # Подача, мм/мин
-    ap: float  # Глубина резания, мм
-    ae: float  # Ширина резания, мм
-
-@dataclass
-class CNCeraError:
-    """Структурированная ошибка"""
-    error_type: ErrorType
-    message: str
-    details: Optional[Dict[str, Any]] = None
-    user_message: Optional[str] = None
-    retry_possible: bool = False
-
-# ---- Enhanced Security and Validation ----
-class SecurityValidator:
-    """Класс для валидации входных данных и обеспечения безопасности"""
-    
-    @staticmethod
-    def validate_filename(filename: str) -> bool:
-        """Проверка имени файла на безопасность"""
-        if not filename or len(filename) > 255:
-            return False
-        
-        forbidden_chars = r'[<>:"/\\|?*\x00-\x1f]'
-        if re.search(forbidden_chars, filename):
-            return False
-            
-        forbidden_names = {
-            'CON', 'PRN', 'AUX', 'NUL',
-            'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
-            'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
-        }
-        
-        name_without_ext = Path(filename).stem.upper()
-        if name_without_ext in forbidden_names:
-            return False
-            
-        return True
-    
-    @staticmethod
-    def validate_gcode_params(params: dict) -> dict:
-        """Валидация параметров G-кода"""
-        validated = {}
-        
-        ranges = {
-            'tool_diam': (0.1, 50.0),
-            'feed': (10.0, 5000.0),
-            'spindle': (100, 24000),
-            'clearance': (1.0, 50.0),
-            'stepover': (0.05, 0.95),
-            'stepdown': (0.0, 50.0)
-        }
-        
-        for key, (min_val, max_val) in ranges.items():
-            if key in params:
-                try:
-                    val = float(params[key])
-                    validated[key] = max(min_val, min(max_val, val))
-                except (ValueError, TypeError):
-                    validated[key] = min_val
-        
-        return validated
-
-# ---- Enhanced Error Handling ----
-class ErrorHandler:
-    """Централизованная обработка ошибок"""
-    
-    def __init__(self, logger: logging.Logger):
-        self.logger = logger
-        self.error_messages = {
-            ErrorType.FILE_NOT_FOUND: "Файл не найден",
-            ErrorType.INVALID_FORMAT: "Неподдерживаемый формат файла",
-            ErrorType.PROCESSING_ERROR: "Ошибка обработки файла",
-            ErrorType.VALIDATION_ERROR: "Ошибка валидации параметров",
-            ErrorType.SYSTEM_ERROR: "Системная ошибка",
-            ErrorType.TIMEOUT_ERROR: "Превышено время ожидания",
-            ErrorType.PERMISSION_ERROR: "Ошибка доступа к файлу"
-        }
-    
-    def handle_exception(self, exc: Exception, context: str = "") -> CNCeraError:
-        """Обработка исключения с контекстом"""
-        error_type = self._classify_exception(exc)
-        message = str(exc)
-        
-        self.logger.error(f"Error in {context}: {message}", exc_info=True)
-        
-        error = CNCeraError(
-            error_type=error_type,
-            message=message,
-            details={
-                "context": context,
-                "exception_type": type(exc).__name__,
-                "traceback": traceback.format_exc()
-            },
-            user_message=self._get_user_friendly_message(error_type),
-            retry_possible=self._is_retry_possible(error_type)
-        )
-        
-        return error
-    
-    def _classify_exception(self, exc: Exception) -> ErrorType:
-        """Классификация исключения по типу"""
-        exc_name = type(exc).__name__
-        
-        if "FileNotFoundError" in exc_name or "NoSuchFile" in exc_name:
-            return ErrorType.FILE_NOT_FOUND
-        elif "TimeoutError" in exc_name or "timeout" in str(exc).lower():
-            return ErrorType.TIMEOUT_ERROR
-        elif "PermissionError" in exc_name or "access" in str(exc).lower():
-            return ErrorType.PERMISSION_ERROR
-        elif "ValueError" in exc_name or "validation" in str(exc).lower():
-            return ErrorType.VALIDATION_ERROR
-        elif "OSError" in exc_name or "IOError" in exc_name:
-            return ErrorType.SYSTEM_ERROR
-        else:
-            return ErrorType.PROCESSING_ERROR
-    
-    def _get_user_friendly_message(self, error_type: ErrorType) -> str:
-        """Получение понятного пользователю сообщения"""
-        return self.error_messages.get(error_type, "Произошла неизвестная ошибка")
-    
-    def _is_retry_possible(self, error_type: ErrorType) -> bool:
-        """Определение возможности повтора операции"""
-        retry_possible = {
-            ErrorType.TIMEOUT_ERROR: True,
-            ErrorType.SYSTEM_ERROR: True,
-            ErrorType.PROCESSING_ERROR: True,
-            ErrorType.FILE_NOT_FOUND: False,
-            ErrorType.INVALID_FORMAT: False,
-            ErrorType.VALIDATION_ERROR: False,
-            ErrorType.PERMISSION_ERROR: False
-        }
-        return retry_possible.get(error_type, False)
-
-# ---- Enhanced Cutting Speed Calculator ----
-class CuttingSpeedCalculator:
-    """Калькулятор режимов резания"""
-    
-    MATERIAL_RANGES = {
-        MaterialGroup.P: {"Vc": (120, 220), "fz": (0.02, 0.12)},
-        MaterialGroup.M: {"Vc": (80, 180), "fz": (0.02, 0.10)},
-        MaterialGroup.K: {"Vc": (160, 260), "fz": (0.03, 0.18)},
-        MaterialGroup.N: {"Vc": (250, 600), "fz": (0.04, 0.25)},
-        MaterialGroup.S: {"Vc": (60, 120), "fz": (0.02, 0.08)},
-        MaterialGroup.H: {"Vc": (80, 150), "fz": (0.01, 0.06)}
-    }
-    
-    @classmethod
-    def calculate_milling_params(cls, material: Material, tool: Tool, 
-                                operation: str = "roughing") -> CuttingParams:
-        """Расчет параметров фрезерования"""
-        ranges = cls.MATERIAL_RANGES.get(material.group, cls.MATERIAL_RANGES[MaterialGroup.P])
-        
-        if operation == "roughing":
-            Vc = ranges["Vc"][0] + (ranges["Vc"][1] - ranges["Vc"][0]) * 0.7
-            fz = ranges["fz"][0] + (ranges["fz"][1] - ranges["fz"][0]) * 0.8
-        else:  # finishing
-            Vc = ranges["Vc"][0] + (ranges["Vc"][1] - ranges["Vc"][0]) * 0.9
-            fz = ranges["fz"][0] + (ranges["fz"][1] - ranges["fz"][0]) * 0.5
-        
-        rpm = int(1000 * Vc / (math.pi * tool.diameter))
-        feed = fz * tool.flutes * rpm
-        
-        if operation == "roughing":
-            ap = tool.diameter * 0.5
-            ae = tool.diameter * 0.4
-        else:
-            ap = tool.diameter * 0.1
-            ae = tool.diameter * 0.2
-        
-        return CuttingParams(
-            Vc=Vc, fz=fz, fn=fz * tool.flutes,
-            rpm=rpm, feed=feed, ap=ap, ae=ae
-        )
-
-# ---- Monitoring System ----
-@dataclass
-class SystemMetrics:
-    """Системные метрики"""
-    timestamp: datetime
-    cpu_percent: float
-    memory_percent: float
-    memory_used_mb: float
-    disk_usage_percent: float
-    active_connections: int
-    processing_tasks: int
-
-@dataclass
-class ProcessingMetrics:
-    """Метрики обработки"""
-    timestamp: datetime
-    operation_type: str
-    file_size: int
-    processing_time: float
-    success: bool
-    error_type: Optional[str] = None
-
-class MetricsCollector:
-    """Сборщик метрик"""
-    
-    def __init__(self, max_history: int = 1000):
-        self.max_history = max_history
-        self.system_metrics = deque(maxlen=max_history)
-        self.processing_metrics = deque(maxlen=max_history)
-        self.request_counts = defaultdict(int)
-        self.error_counts = defaultdict(int)
-        self.start_time = datetime.now()
-        self.lock = threading.Lock()
-    
-    def collect_system_metrics(self) -> SystemMetrics:
-        """Сбор системных метрик"""
-        try:
-            cpu_percent = psutil.cpu_percent(interval=1)
-            memory = psutil.virtual_memory()
-            disk = psutil.disk_usage('/')
-            connections = len(psutil.net_connections())
-            
-            metrics = SystemMetrics(
-                timestamp=datetime.now(),
-                cpu_percent=cpu_percent,
-                memory_percent=memory.percent,
-                memory_used_mb=memory.used / (1024 * 1024),
-                disk_usage_percent=disk.percent,
-                active_connections=connections,
-                processing_tasks=0
-            )
-            
-            with self.lock:
-                self.system_metrics.append(metrics)
-            
-            return metrics
-        except Exception as e:
-            logging.error(f"Ошибка сбора системных метрик: {e}")
-            return None
-    
-    def record_processing(self, operation_type: str, file_size: int, 
-                         processing_time: float, success: bool, 
-                         error_type: Optional[str] = None):
-        """Запись метрик обработки"""
-        metrics = ProcessingMetrics(
-            timestamp=datetime.now(),
-            operation_type=operation_type,
-            file_size=file_size,
-            processing_time=processing_time,
-            success=success,
-            error_type=error_type
-        )
-        
-        with self.lock:
-            self.processing_metrics.append(metrics)
-            self.request_counts[operation_type] += 1
-            if not success:
-                self.error_counts[error_type or "unknown"] += 1
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """Получение статистики"""
-        with self.lock:
-            uptime = datetime.now() - self.start_time
-            total_requests = sum(self.request_counts.values())
-            total_errors = sum(self.error_counts.values())
-            success_rate = ((total_requests - total_errors) / total_requests * 100) if total_requests > 0 else 0
-            
-            processing_times = {}
-            for op_type in set(m.operation_type for m in self.processing_metrics):
-                times = [m.processing_time for m in self.processing_metrics if m.operation_type == op_type]
-                if times:
-                    processing_times[op_type] = {
-                        "avg": sum(times) / len(times),
-                        "min": min(times),
-                        "max": max(times),
-                        "count": len(times)
-                    }
-            
-            latest_system = self.system_metrics[-1] if self.system_metrics else None
-            
-            return {
-                "uptime_seconds": uptime.total_seconds(),
-                "total_requests": total_requests,
-                "total_errors": total_errors,
-                "success_rate": success_rate,
-                "request_counts": dict(self.request_counts),
-                "error_counts": dict(self.error_counts),
-                "processing_times": processing_times,
-                "system_metrics": asdict(latest_system) if latest_system else None
-            }
-
-# ---- Server-side PNG rendering (fallback) ----
-try:
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-    try:
-        from stl import mesh as stlmesh
-    except Exception:
-        stlmesh = None
-except Exception:
-    matplotlib = None
-    stlmesh = None
-    plt = None
-
-# ---- Logging setup ----
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger("CNCera")
-
-# ---- Directory setup ----
-BASE = Path(__file__).parent.resolve()
-TEMP = BASE / "temp"
-TEMP.mkdir(exist_ok=True)
-MODELS = BASE / "models"
-MODELS.mkdir(exist_ok=True)
-STATIC = BASE / "static"
-STATIC.mkdir(exist_ok=True)
-
-ALLOWED_EXTENSIONS = {".step", ".stp", ".stl"}
+# ---- Configuration ----
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100MB limit
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
 
-# ---- Initialize Enhanced Components ----
-error_handler = ErrorHandler(logger)
-security_validator = SecurityValidator()
+# Directories
+MODELS = Path("models")
+STATIC = Path("static")
+TEMP = Path("temp")
+
+# Create directories
+for d in [MODELS, STATIC, TEMP]:
+    d.mkdir(exist_ok=True)
+
+# Initialize enhanced components
+error_handler = ErrorHandler(logging.getLogger(__name__))
 metrics_collector = MetricsCollector()
 
-# ---- Global error handler ----
-@app.errorhandler(Exception)
-def handle_error(e):
-    error = error_handler.handle_exception(e, f"Route: {request.endpoint}")
-    logger.error("Uncaught exception: %s", e, exc_info=True)
-    if request.path in ("/upload", "/generate_gcode"):
-        return jsonify({
-            "success": False, 
-            "error": error.user_message,
-            "error_type": error.error_type.value,
-            "retry_possible": error.retry_possible
-        }), 200
-    return "Internal Server Error", 500
-
-# ---- Enhanced Utility functions ----
-def allowed_file(filename: str) -> bool:
-    if not SecurityValidator.validate_filename(filename):
-        return False
-    return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
-
-def validate_float(value, default: float, min_val: float, max_val: float) -> float:
-    try:
-        val = float(value)
-        return max(min_val, min(max_val, val))
-    except (TypeError, ValueError):
-        return default
-
-def validate_int(value, default: int, min_val: int, max_val: int) -> int:
-    try:
-        val = int(value)
-        return max(min_val, min(max_val, val))
-    except (TypeError, ValueError):
-        return default
-
-def get_uploaded_size(fs) -> int:
-    """Safely determine uploaded file size from a Werkzeug FileStorage."""
-    try:
-        cl = getattr(fs, "content_length", None)
-        if isinstance(cl, int) and cl >= 0:
-            return cl
-    except Exception:
-        pass
-    try:
-        stream = getattr(fs, "stream", None)
-        if stream is not None and hasattr(stream, "tell") and hasattr(stream, "seek"):
-            pos = stream.tell()
-            stream.seek(0, 2)  # SEEK_END
-            size = stream.tell()
-            stream.seek(pos, 0)  # SEEK_SET back
-            if isinstance(size, int) and size >= 0:
-                return size
-    except Exception:
-        pass
-    try:
-        hdr = request.headers.get("Content-Length")
-        if hdr is not None:
-            return int(hdr)
-    except Exception:
-        pass
-    return 0
-
-# ---- STL mesh analysis ----
-def analyze_stl(stl_path: Path) -> Dict:
-    if stlmesh is None:
-        return {"vertices": 0, "faces": 0}
-    try:
-        mesh = stlmesh.Mesh.from_file(str(stl_path))
-        return {
-            "vertices": len(mesh.vectors) * 3,
-            "faces": len(mesh.vectors)
-        }
-    except Exception as e:
-        logger.warning(f"STL analysis failed: {e}")
-        return {"vertices": 0, "faces": 0}
-
-# ---- PNG rendering for STL ----
-def render_stl_to_png(stl_path: Path, png_path: Path) -> bool:
-    if matplotlib is None or stlmesh is None:
-        logger.warning("matplotlib or numpy-stl not available: PNG preview disabled")
-        return False
-    try:
-        mesh = stlmesh.Mesh.from_file(str(stl_path))
-        faces = mesh.vectors
-        xs, ys, zs = mesh.x, mesh.y, mesh.z
-        cx, cy, cz = (xs.min() + xs.max()) / 2, (ys.min() + ys.max()) / 2, (zs.min() + zs.max()) / 2
-        r = max((xs.max() - xs.min()) / 2, (ys.max() - ys.min()) / 2, (zs.max() - zs.min()) / 2) or 1.0
-        fig = plt.figure(figsize=(8, 8), dpi=150)
-        ax = fig.add_subplot(111, projection="3d")
-        fig.patch.set_facecolor("#0b1b24")
-        ax.set_facecolor("#0b1b24")
-        ax.set_proj_type("ortho")
-        coll = Poly3DCollection(faces, linewidths=0.1)
-        coll.set_facecolor((0.55, 0.75, 0.95, 1.0))
-        coll.set_edgecolor((0.1, 0.1, 0.15, 0.25))
-        ax.add_collection3d(coll)
-        ax.set_xlim(cx - r, cx + r)
-        ax.set_ylim(cy - r, cy + r)
-        ax.set_zlim(cz - r, cz + r)
-        ax.set_axis_off()
-        ax.view_init(30, 45)
-        fig.tight_layout(pad=0)
-        fig.savefig(str(png_path), transparent=False, facecolor=fig.get_facecolor())
-        plt.close(fig)
-        return True
-    except Exception as e:
-        logger.warning(f"PNG render failed: {e}")
-        try:
-            plt.close("all")
-        except Exception:
-            pass
-        return False
-
-# ---- Locate FreeCADCmd ----
-def locate_freecadcmd() -> Optional[str]:
-    for key in ("FREECADCMD_PATH", "FREECADCMD"):
-        val = os.environ.get(key)
-        if val and os.path.isfile(val):
-            return val
-    for name in ("FreeCADCmd.exe", "FreeCADCmd"):
-        path = shutil.which(name)
-        if path:
-            return path
-    patterns = [
-        r"C:/Program Files/FreeCAD*/bin/FreeCADCmd*.exe",
-        r"C:/Program Files (x86)/FreeCAD*/bin/FreeCADCmd*.exe",
-        "/usr/bin/FreeCADCmd",
-        "/usr/local/bin/FreeCADCmd",
-        "/Applications/FreeCAD.app/Contents/MacOS/FreeCADCmd"
-    ]
-    import glob
-    for pattern in patterns:
-        matches = glob.glob(pattern)
-        for match in matches:
-            if os.path.isfile(match):
-                return match
-    return None
-
-# ---- Enhanced STEP to STL conversion with error handling ----
-def freecad_export_step_to_stl(
-        step_path: Path,
-        stl_path: Path,
-        linear_deflection: float = 0.1,
-        angular_deflection_deg: float = 15.0,
-        relative: bool = False,
-        units: str = "auto"
-) -> Dict:
-    exe = locate_freecadcmd()
-    if not exe:
-        raise FileNotFoundError("FreeCADCmd not found. Set FREECADCMD_PATH or add FreeCAD/bin to PATH.")
-
-    stl_path.parent.mkdir(parents=True, exist_ok=True)
-    sys_tmp = Path(tempfile.gettempdir())
-    tmp_py = sys_tmp / f"fc_{hashlib.md5(str(step_path).encode()).hexdigest()}.py"
-    out_json = sys_tmp / f"fc_{hashlib.md5((str(step_path) + '_json').encode()).hexdigest()}.json"
-
-    sp = str(step_path).replace("\\", "/")
-    tp = str(stl_path).replace("\\", "/")
-    jp = str(out_json).replace("\\", "/")
-
-    lin = validate_float(linear_deflection, 0.1, 0.01, 10.0)
-    ang = validate_float(angular_deflection_deg, 15.0, 0.01, 89.0)
-    rel = "True" if relative else "False"
-    units = units.lower() if units in ("auto", "mm", "inch", "m") else "auto"
-
-    from string import Template
-    fc_script_template = """
-import os, sys, json, traceback, math
-import FreeCAD as App
-import Part, Mesh, MeshPart
-
-step_path = r"$SP"
-stl_path = r"$TP"
-json_path = r"$JP"
-
-linear_deflection = $LIN
-angular_deflection_deg = $ANG
-relative = $REL
-units = "$UNITS"
-
-def write_json(obj):
-    try:
-        with open(json_path, "w", encoding="utf-8") as f:
-            f.write(json.dumps(obj, ensure_ascii=False))
-    except Exception as ee:
-        print("WRITE_JSON_FAIL", ee)
-
-try:
-    doc = App.newDocument("tmpdoc")
-    import Import
-    Import.insert(step_path, "tmpdoc")
-    objects = doc.Objects
-    if not objects:
-        raise Exception("No objects found in the STEP file")
-    shape_objects = [obj for obj in objects if hasattr(obj, 'Shape') and obj.Shape is not None]
-    if not shape_objects:
-        raise Exception("No valid Shape objects found in the STEP file")
-    if len(shape_objects) == 1:
-        combined_shape = shape_objects[0].Shape
-    else:
-        combined_shape = shape_objects[0].Shape
-        for obj in shape_objects[1:]:
-            try:
-                combined_shape = combined_shape.fuse(obj.Shape)
-            except:
-                try:
-                    import Part
-                    shapes = [combined_shape] + [obj.Shape for obj in shape_objects[1:]]
-                    combined_shape = Part.makeCompound(shapes)
-                    break
-                except:
-                    pass
-    scale = {"inch": 25.4, "m": 1000.0, "mm": 1.0, "auto": 1.0}[units]
-    if abs(scale - 1.0) > 1e-9:
-        m = App.Matrix()
-        m.A11 = scale; m.A22 = scale; m.A33 = scale
-        combined_shape = combined_shape.transformGeometry(m)
-    bbox = combined_shape.BoundBox
-    success = True
-    err = ""
-    try:
-        mesh_obj = MeshPart.meshFromShape(
-            Shape=combined_shape,
-            LinearDeflection=linear_deflection,
-            AngularDeflection=math.radians(angular_deflection_deg),
-            Relative=relative
-        )
-        mesh_obj.write(stl_path)
-    except Exception as e2:
-        success = False
-        err = str(e2)
-        traceback.print_exc()
-    res = {
-        "success": success,
-        "error": err,
-        "file_info": {
-            "filename": os.path.basename(step_path),
-            "file_type": ".step",
-            "file_size": os.path.getsize(step_path)
-        },
-        "geometry": {
-            "dimensions": {
-                "length": round(bbox.XLength, 3),
-                "width": round(bbox.YLength, 3),
-                "height": round(bbox.ZLength, 3)
-            },
-            "units": "mm",
-            "zero_point": {
-                "G54": {
-                    "name": "G54",
-                    "description": "bbox center",
-                    "position": [
-                        round((bbox.XMin + bbox.XMax) / 2.0, 3),
-                        round((bbox.YMin + bbox.YMax) / 2.0, 3),
-                        round((bbox.ZMin + bbox.ZMax) / 2.0, 3)
-                    ]
-                }
-            }
-        },
-        "meshing": {
-            "LinearDeflection": linear_deflection,
-            "AngularDeflection_deg": angular_deflection_deg,
-            "Relative": relative
-        }
-    }
-    write_json(res)
-    print("OK")
-except Exception as e:
-    error_info = {
-        "success": False, 
-        "error": str(e), 
-        "traceback": traceback.format_exc()
-    }
-    write_json(error_info)
-    print("ERROR:", e)
-    traceback.print_exc()
-"""
-    fc_script = Template(fc_script_template).substitute(
-        SP=sp, TP=tp, JP=jp, LIN=lin, ANG=ang, REL=rel, UNITS=units
-    )
-
-    tmp_py.write_text(fc_script, encoding="utf-8")
-    creationflags = 0x08000000 if os.name == "nt" else 0
-    env = os.environ.copy()
-    env["PYTHONUTF8"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
-
-    try:
-        p = subprocess.run(
-            [exe, str(tmp_py)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=600,
-            creationflags=creationflags,
-            env=env
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("FreeCADCmd execution timed out")
-
-    if not out_json.exists():
-        err_txt = p.stderr.decode("utf-8", errors="ignore")[-300:] if p.stderr else ""
-        out_txt = p.stdout.decode("utf-8", errors="ignore")[-300:] if p.stdout else ""
-        raise RuntimeError(f"FreeCAD failed to generate JSON (stdout: {out_txt} | stderr: {err_txt})")
-
-    try:
-        data = json.loads(out_json.read_text(encoding="utf-8"))
-    except Exception as e:
-        raise RuntimeError(f"Invalid JSON from FreeCAD: {e}")
-    finally:
-        for path in (tmp_py, out_json):
-            try:
-                path.unlink()
-            except Exception:
-                pass
-
-    if not data.get("success", False):
-        raise RuntimeError(f"FreeCAD meshing/export failed: {data.get('error', 'unknown error')}")
-
-    return data
-
-# ---- CAM geometry preparation ----
-def prepare_bins(tris, step_xy: float, xmin: float, xmax: float, ymin: float, ymax: float):
-    nx = max(16, min(96, int((xmax - xmin) / max(1e-6, step_xy * 2))))
-    ny = max(16, min(96, int((ymax - ymin) / max(1e-6, step_xy * 2))))
-    sx = (xmax - xmin) / nx if nx > 0 else 1.0
-    sy = (ymax - ymin) / ny if ny > 0 else 1.0
-    bins = [[[] for _ in range(ny)] for _ in range(nx)]
-    coeffs_list = []
-
-    def tri_coeff(tri):
-        (x1, y1, z1), (x2, y2, z2), (x3, y3, z3) = tri
-        ux, uy, uz = x2 - x1, y2 - y1, z2 - z1
-        vx, vy, vz = x3 - x1, y3 - y1, z3 - z1
-        A = uy * vz - uz * vy
-        B = uz * vx - ux * vz
-        C = ux * vy - uy * vx
-        if abs(C) < 1e-12:
-            return None
-        D = -(A * x1 + B * y1 + C * z1)
-        minx, maxx = min(x1, x2, x3), max(x1, x2, x3)
-        miny, maxy = min(y1, y2, y3), max(y1, y2, y3)
-        return (A, B, C, D, minx, maxx, miny, maxy, (x1, y1, z1), (x2, y2, z2), (x3, y3, z3))
-
-    for tri in tris:
-        c = tri_coeff(tri)
-        if c is None:
-            continue
-        idx = len(coeffs_list)
-        coeffs_list.append(c)
-        minx, maxx, miny, maxy = c[4:8]
-        i0 = int(max(0, min(nx - 1, math.floor((minx - xmin) / sx))))
-        i1 = int(max(0, min(nx - 1, math.floor((maxx - xmin) / sx))))
-        j0 = int(max(0, min(ny - 1, math.floor((miny - ymin) / sy))))
-        j1 = int(max(0, min(ny - 1, math.floor((maxy - ymin) / sy))))
-        for i in range(i0, i1 + 1):
-            for j in range(j0, j1 + 1):
-                bins[i][j].append(idx)
-    return bins, coeffs_list, nx, ny, sx, sy
-
-def point_in_tri_xy(px: float, py: float, a: Tuple, b: Tuple, c: Tuple) -> bool:
-    ax, ay, _ = a
-    bx, by, _ = b
-    cx, cy, _ = c
-    v0x, v0y = cx - ax, cy - ay
-    v1x, v1y = bx - ax, by - ay
-    v2x, v2y = px - ax, py - ay
-    d00 = v0x * v0x + v0y * v0y
-    d01 = v0x * v1x + v0y * v1y
-    d11 = v1x * v1x + v1y * v1y
-    d20 = v2x * v0x + v2y * v0y
-    d21 = v2x * v1x + v2y * v1y
-    denom = d00 * d11 - d01 * d01
-    if abs(denom) < 1e-12:
-        return False
-    v = (d11 * d20 - d01 * d21) / denom
-    w = (d00 * d21 - d01 * d20) / denom
-    u = 1.0 - v - w
-    return u >= -1e-9 and v >= -1e-9 and w >= -1e-9
-
-def z_for(px: float, py: float, coeffs: Tuple) -> Optional[float]:
-    A, B, C, D, minx, maxx, miny, maxy, a, b, c = coeffs
-    if not (minx - 1e-9 <= px <= maxx + 1e-9 and miny - 1e-9 <= py <= maxy + 1e-9):
-        return None
-    if not point_in_tri_xy(px, py, a, b, c):
-        return None
-    return -(A * px + B * py + D) / C
-
-def build_top_sampler(stl_path: Path, step_xy: float) -> Tuple[Tuple, callable]:
-    if stlmesh is None:
-        raise RuntimeError("numpy-stl not installed")
-    m = stlmesh.Mesh.from_file(str(stl_path))
-    tris = m.vectors
-    xs, ys, zs = m.x, m.y, m.z
-    xmin, xmax = float(xs.min()), float(xs.max())
-    ymin, ymax = float(ys.min()), float(ys.max())
-    zmin, zmax = float(zs.min()), float(zs.max())
-    bins, coeffs, nx, ny, sx, sy = prepare_bins(tris, step_xy, xmin, xmax, ymin, ymax)
-
-    def z_func(px: float, py: float) -> Optional[float]:
-        i = int(min(nx - 1, max(0, math.floor((px - xmin) / sx))))
-        j = int(min(ny - 1, max(0, math.floor((py - ymin) / sy))))
-        best = None
-        for di in (-1, 0, 1):
-            ii = i + di
-            if not (0 <= ii < nx):
-                continue
-            for dj in (-1, 0, 1):
-                jj = j + dj
-                if not (0 <= jj < ny):
-                    continue
-                for idx in bins[ii][jj]:
-                    z = z_for(px, py, coeffs[idx])
-                    if z is not None and (best is None or z > best):
-                        best = z
-        return best
-
-    return (xmin, xmax, ymin, ymax, zmin, zmax), z_func
-
-# ---- Marching Squares for waterline ----
-def marching_squares(Z: List[List[float]], xs: List[float], ys: List[float], level: float) -> List[List[Tuple]]:
-    ny, nx = len(Z), len(Z[0]) if Z else 0
-    if nx < 2 or ny < 2:
-        return []
-    segs = []
-    for j in range(ny - 1):
-        for i in range(nx - 1):
-            z00, z10 = Z[j][i], Z[j][i + 1]
-            z01, z11 = Z[j + 1][i], Z[j + 1][i + 1]
-            c = 0
-            if z00 > level:
-                c |= 1
-            if z10 > level:
-                c |= 2
-            if z11 > level:
-                c |= 4
-            if z01 > level:
-                c |= 8
-            if c == 0 or c == 15:
-                continue
-            x0, x1 = xs[i], xs[i + 1]
-            y0, y1 = ys[j], ys[j + 1]
-
-            def interp(a: float, b: float, za: float, zb: float) -> float:
-                t = 0.5 if (zb - za) == 0 else (level - za) / ((zb - za) or 1e-9)
-                return a + t * (b - a)
-
-            pts = []
-            if (c & 1) != (c & 8):
-                pts.append((x0, interp(y0, y1, z00, z01)))
-            if (c & 2) != (c & 4):
-                pts.append((x1, interp(y0, y1, z10, z11)))
-            if (c & 1) != (c & 2):
-                pts.append((interp(x0, x1, z00, z10), y0))
-            if (c & 8) != (c & 4):
-                pts.append((interp(x0, x1, z01, z11), y1))
-            if len(pts) == 2:
-                segs.append((pts[0], pts[1]))
-            elif len(pts) == 4:
-                segs.append((pts[0], pts[1]))
-                segs.append((pts[2], pts[3]))
-
-    loops = []
-    used = [False] * len(segs)
-    for sidx, (a, b) in enumerate(segs):
-        if used[sidx]:
-            continue
-        used[sidx] = True
-        loop = [a, b]
-        changed = True
-        while changed:
-            changed = False
-            for k, (p, q) in enumerate(segs):
-                if used[k]:
-                    continue
-                if abs(loop[-1][0] - p[0]) < 1e-6 and abs(loop[-1][1] - p[1]) < 1e-6:
-                    loop.append(q)
-                    used[k] = True
-                    changed = True
-                elif abs(loop[-1][0] - q[0]) < 1e-6 and abs(loop[-1][1] - q[1]) < 1e-6:
-                    loop.append(p)
-                    used[k] = True
-                    changed = True
-        if len(loop) >= 3:
-            loops.append(loop)
-    return loops
-
-# ---- Enhanced Controller and operation-specific G-code functions ----
-def get_controller_settings(controller: str) -> Dict:
-    """Get controller-specific G-code settings"""
+# ---- Utility Functions ----
+def get_controller_settings(controller: str) -> Dict[str, str]:
+    """Get G-code settings for specific controller"""
     settings = {
         "fanuc": {
-            "header": ["G90", "G17", "G21", "G40", "G49", "G80", "G54"],
-            "spindle_on": "M3 S{spindle}",
-            "spindle_off": "M5",
-            "coolant_on": "M8",
-            "coolant_off": "M9",
-            "rapid": "G0",
-            "linear": "G1",
+            "header": ["G21", "G90", "G94", "M08"],
+            "spindle_on": "M03 S{spindle}",
+            "spindle_off": "M05",
+            "coolant_on": "M08",
+            "coolant_off": "M09",
+            "rapid": "G00",
+            "linear": "G01",
             "program_end": "M30"
         },
         "siemens": {
-            "header": ["G90", "G17", "G71", "G40", "G54"],
-            "spindle_on": "M3 S{spindle}",
-            "spindle_off": "M5",
-            "coolant_on": "M7",
-            "coolant_off": "M9",
-            "rapid": "G0",
-            "linear": "G1",
-            "program_end": "M2"
+            "header": ["G71", "G90", "G94", "M08"],
+            "spindle_on": "M03 S{spindle}",
+            "spindle_off": "M05",
+            "coolant_on": "M08",
+            "coolant_off": "M09",
+            "rapid": "G00",
+            "linear": "G01",
+            "program_end": "M30"
         },
         "heidenhain": {
-            "header": ["* - Generated by CNCera", "BLK FORM 0.1 Z X+0 Y+0 Z-50"],
-            "spindle_on": "SPINDLE ON CW SPEED {spindle}",
-            "spindle_off": "SPINDLE OFF",
-            "coolant_on": "COOLANT ON",
-            "coolant_off": "COOLANT OFF",
-            "rapid": "L",
+            "header": ["BEGIN PGM 1 MM", "TOOL DEF 1 L+0 R+1.5"],
+            "spindle_on": "M03 S{spindle}",
+            "spindle_off": "M05",
+            "coolant_on": "M08",
+            "coolant_off": "M09",
+            "rapid": "L Z+5 R0 FMAX",
             "linear": "L",
-            "program_end": "END PGM"
+            "program_end": "END PGM 1 MM"
         },
         "gsk": {
-            "header": ["G90", "G17", "G21", "G40", "G49", "G80", "G54"],
-            "spindle_on": "M3 S{spindle}",
-            "spindle_off": "M5",
-            "coolant_on": "M8",
-            "coolant_off": "M9",
+            "header": ["G21", "G90", "G94", "M08"],
+            "spindle_on": "M03 S{spindle}",
+            "spindle_off": "M05",
+            "coolant_on": "M08",
+            "coolant_off": "M09",
             "rapid": "G00",
             "linear": "G01",
             "program_end": "M30"
         },
         "mazak": {
-            "header": ["G90", "G17", "G21", "G40", "G49", "G80", "G54"],
-            "spindle_on": "M3 S{spindle}",
-            "spindle_off": "M5",
-            "coolant_on": "M8",
-            "coolant_off": "M9",
-            "rapid": "G0",
-            "linear": "G1",
-            "program_end": "M99"
+            "header": ["G21", "G90", "G94", "M08"],
+            "spindle_on": "M03 S{spindle}",
+            "spindle_off": "M05",
+            "coolant_on": "M08",
+            "coolant_off": "M09",
+            "rapid": "G00",
+            "linear": "G01",
+            "program_end": "M30"
         }
     }
     return settings.get(controller, settings["fanuc"])
 
-# ---- Enhanced G-code generation with cutting parameters ----
+def process_uploaded_file(file, units: str, linear_deflection: float, angular_deflection_deg: float, relative: bool) -> Dict:
+    """Process uploaded file with enhanced error handling"""
+    try:
+        # Save uploaded file
+        filename = file.filename
+        if not SecurityValidator.validate_filename(filename):
+            raise CNCeraError(ErrorType.SECURITY_ERROR, "Invalid filename", "Недопустимое имя файла")
+        
+        file_hash = hashlib.md5(filename.encode()).hexdigest()[:8]
+        temp_path = TEMP / f"{file_hash}_{filename}"
+        
+        file.save(str(temp_path))
+        
+        # Convert STEP to STL if needed
+        if filename.lower().endswith(('.step', '.stp')):
+            stl_path = convert_step_to_stl(temp_path, linear_deflection, angular_deflection_deg)
+        else:
+            stl_path = temp_path
+        
+        # Analyze STL
+        result = analyze_stl_file(stl_path, units, relative)
+        
+        # Generate preview
+        preview_png = generate_preview_png(stl_path)
+        preview_png_data = None
+        if preview_png:
+            with open(preview_png, 'rb') as f:
+                preview_png_data = f"data:image/png;base64,{base64.b64encode(f.read()).decode()}"
+        
+        # Save results
+        result_filename = f"analysis_{file_hash}.json"
+        result_path = TEMP / result_filename
+        with open(result_path, 'w', encoding='utf-8') as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        
+        # Move STL to models directory
+        model_filename = f"model_{file_hash}.stl"
+        model_path = MODELS / model_filename
+        shutil.move(str(stl_path), str(model_path))
+        
+        # Cleanup temp file
+        if temp_path.exists() and temp_path != stl_path:
+            temp_path.unlink()
+        
+        return {
+            "model_path": f"/models/{model_filename}",
+            "result_filename": result_filename,
+            "preview_png": f"/models/{Path(preview_png).name}" if preview_png else None,
+            "preview_png_data": preview_png_data,
+            "file_info": {
+                "filename": filename,
+                "file_size": temp_path.stat().st_size if temp_path.exists() else 0,
+                "file_type": "STEP" if filename.lower().endswith(('.step', '.stp')) else "STL"
+            },
+            "geometry": result.get("geometry"),
+            "mesh_info": result.get("mesh_info")
+        }
+        
+    except Exception as e:
+        # Cleanup on error
+        if 'temp_path' in locals() and temp_path.exists():
+            temp_path.unlink()
+        if 'stl_path' in locals() and stl_path.exists() and stl_path != temp_path:
+            stl_path.unlink()
+        raise
+
+def convert_step_to_stl(step_path: Path, linear_deflection: float, angular_deflection_deg: float) -> Path:
+    """Convert STEP file to STL using FreeCAD"""
+    try:
+        stl_path = step_path.with_suffix('.stl')
+        
+        # FreeCAD Python script for conversion
+        script_content = f"""
+import FreeCAD
+import Part
+import Mesh
+
+# Load STEP file
+doc = FreeCAD.newDocument()
+Part.insert(unicode("{step_path}"), "part")
+
+# Get the part
+part = doc.Objects[0]
+
+# Create mesh
+mesh_obj = doc.addObject("Mesh::Feature", "mesh")
+mesh_obj.Mesh = Mesh.Mesh(part.Shape, {linear_deflection}, {math.radians(angular_deflection_deg)})
+
+# Export STL
+mesh_obj.Mesh.write(unicode("{stl_path}"))
+
+# Close document
+FreeCAD.closeDocument(doc.Name)
+"""
+        
+        script_path = TEMP / f"convert_{hashlib.md5(str(step_path).encode()).hexdigest()[:8]}.py"
+        with open(script_path, 'w', encoding='utf-8') as f:
+            f.write(script_content)
+        
+        # Run FreeCAD
+        result = subprocess.run([
+            "FreeCADCmd", str(script_path)
+        ], capture_output=True, text=True, timeout=300)
+        
+        # Cleanup script
+        script_path.unlink()
+        
+        if result.returncode != 0:
+            raise CNCeraError(ErrorType.PROCESSING_ERROR, "FreeCAD conversion failed", "Ошибка конвертации FreeCAD")
+        
+        if not stl_path.exists():
+            raise CNCeraError(ErrorType.PROCESSING_ERROR, "STL file not created", "STL файл не создан")
+        
+        return stl_path
+        
+    except subprocess.TimeoutExpired:
+        raise CNCeraError(ErrorType.PROCESSING_ERROR, "FreeCAD timeout", "Таймаут FreeCAD")
+    except FileNotFoundError:
+        raise CNCeraError(ErrorType.CONFIGURATION_ERROR, "FreeCAD not found", "FreeCAD не найден")
+    except Exception as e:
+        raise CNCeraError(ErrorType.PROCESSING_ERROR, f"Conversion error: {str(e)}", "Ошибка конвертации")
+
+def analyze_stl_file(stl_path: Path, units: str, relative: bool) -> Dict:
+    """Analyze STL file and return geometry information"""
+    try:
+        # Load STL
+        stl_mesh = mesh.Mesh.from_file(str(stl_path))
+        
+        # Calculate bounding box
+        min_coords = np.min(stl_mesh.vectors.reshape(-1, 3), axis=0)
+        max_coords = np.max(stl_mesh.vectors.reshape(-1, 3), axis=0)
+        
+        # Calculate dimensions
+        dimensions = max_coords - min_coords
+        
+        # Calculate volume and surface area
+        volume = stl_mesh.get_mass_properties()[0]
+        surface_area = np.sum([np.linalg.norm(np.cross(
+            stl_mesh.vectors[i, 1] - stl_mesh.vectors[i, 0],
+            stl_mesh.vectors[i, 2] - stl_mesh.vectors[i, 0]
+        )) for i in range(len(stl_mesh.vectors))]) / 2
+        
+        # Convert units if needed
+        if units == "inch":
+            dimensions *= 25.4
+            volume *= 25.4**3
+            surface_area *= 25.4**2
+        elif units == "m":
+            dimensions *= 1000
+            volume *= 1000**3
+            surface_area *= 1000**2
+        
+        return {
+            "geometry": {
+                "dimensions": {
+                    "length": float(dimensions[0]),
+                    "width": float(dimensions[1]),
+                    "height": float(dimensions[2])
+                },
+                "volume": float(volume),
+                "surface_area": float(surface_area),
+                "bounding_box": {
+                    "min": [float(x) for x in min_coords],
+                    "max": [float(x) for x in max_coords]
+                }
+            },
+            "mesh_info": {
+                "vertices": len(stl_mesh.vectors) * 3,
+                "faces": len(stl_mesh.vectors)
+            }
+        }
+        
+    except Exception as e:
+        raise CNCeraError(ErrorType.PROCESSING_ERROR, f"STL analysis failed: {str(e)}", "Ошибка анализа STL")
+
+def generate_preview_png(stl_path: Path) -> Optional[Path]:
+    """Generate PNG preview of STL file"""
+    try:
+        # Load STL
+        stl_mesh = mesh.Mesh.from_file(str(stl_path))
+        
+        # Create figure
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Plot mesh
+        for i in range(len(stl_mesh.vectors)):
+            triangle = stl_mesh.vectors[i]
+            ax.plot_trisurf(
+                triangle[:, 0], triangle[:, 1], triangle[:, 2],
+                color='lightblue', alpha=0.7, edgecolor='black', linewidth=0.1
+            )
+        
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        ax.set_title('3D Model Preview')
+        
+        # Save to PNG
+        png_path = stl_path.with_suffix('.png')
+        canvas = FigureCanvasAgg(fig)
+        canvas.print_png(str(png_path))
+        plt.close(fig)
+        
+        return png_path
+        
+    except Exception as e:
+        logging.warning(f"Failed to generate preview: {e}")
+        return None
+
+def build_top_sampler(stl_path: Path, step: float) -> Tuple[Tuple[float, float, float, float, float, float], callable]:
+    """Build top surface sampler for toolpath generation"""
+    try:
+        stl_mesh = mesh.Mesh.from_file(str(stl_path))
+        
+        # Get bounding box
+        min_coords = np.min(stl_mesh.vectors.reshape(-1, 3), axis=0)
+        max_coords = np.max(stl_mesh.vectors.reshape(-1, 3), axis=0)
+        
+        xmin, ymin, zmin = min_coords
+        xmax, ymax, zmax = max_coords
+        
+        # Create grid
+        x_coords = np.arange(xmin, xmax + step, step)
+        y_coords = np.arange(ymin, ymax + step, step)
+        
+        # Sample top surface
+        top_surface = np.full((len(y_coords), len(x_coords)), zmin)
+        
+        for i, y in enumerate(y_coords):
+            for j, x in enumerate(x_coords):
+                # Find highest Z for this (x,y)
+                z_values = []
+                for triangle in stl_mesh.vectors:
+                    # Check if point is inside triangle
+                    if point_in_triangle(x, y, triangle):
+                        # Calculate Z at this point
+                        z = calculate_z_at_point(x, y, triangle)
+                        if z is not None:
+                            z_values.append(z)
+                
+                if z_values:
+                    top_surface[i, j] = max(z_values)
+        
+        def z_func(x: float, y: float) -> Optional[float]:
+            if x < xmin or x > xmax or y < ymin or y > ymax:
+                return None
+            
+            i = int((y - ymin) / step)
+            j = int((x - xmin) / step)
+            
+            if 0 <= i < len(y_coords) and 0 <= j < len(x_coords):
+                return float(top_surface[i, j])
+            return None
+        
+        return (xmin, xmax, ymin, ymax, zmin, zmax), z_func
+        
+    except Exception as e:
+        raise CNCeraError(ErrorType.PROCESSING_ERROR, f"Top sampler failed: {str(e)}", "Ошибка построения сэмплера")
+
+def point_in_triangle(x: float, y: float, triangle: np.ndarray) -> bool:
+    """Check if point is inside triangle"""
+    p0, p1, p2 = triangle
+    denom = (p1[1] - p2[1]) * (p0[0] - p2[0]) + (p2[0] - p1[0]) * (p0[1] - p2[1])
+    if abs(denom) < 1e-10:
+        return False
+    
+    a = ((p1[1] - p2[1]) * (x - p2[0]) + (p2[0] - p1[0]) * (y - p2[1])) / denom
+    b = ((p2[1] - p0[1]) * (x - p2[0]) + (p0[0] - p2[0]) * (y - p2[1])) / denom
+    c = 1 - a - b
+    
+    return 0 <= a <= 1 and 0 <= b <= 1 and 0 <= c <= 1
+
+def calculate_z_at_point(x: float, y: float, triangle: np.ndarray) -> Optional[float]:
+    """Calculate Z coordinate at point (x,y) on triangle"""
+    p0, p1, p2 = triangle
+    
+    # Calculate barycentric coordinates
+    denom = (p1[1] - p2[1]) * (p0[0] - p2[0]) + (p2[0] - p1[0]) * (p0[1] - p2[1])
+    if abs(denom) < 1e-10:
+        return None
+    
+    a = ((p1[1] - p2[1]) * (x - p2[0]) + (p2[0] - p1[0]) * (y - p2[1])) / denom
+    b = ((p2[1] - p0[1]) * (x - p2[0]) + (p0[0] - p2[0]) * (y - p2[1])) / denom
+    c = 1 - a - b
+    
+    if 0 <= a <= 1 and 0 <= b <= 1 and 0 <= c <= 1:
+        return a * p0[2] + b * p1[2] + c * p2[2]
+    return None
+
+def generate_ai_response(message: str, provider: str, api_key: str) -> str:
+    """Generate AI response using specified provider"""
+    try:
+        if provider == "openai":
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "gpt-3.5-turbo",
+                    "messages": [
+                        {"role": "system", "content": "You are a CNC machining expert. Provide helpful, accurate information about CNC operations, G-code, and manufacturing processes."},
+                        {"role": "user", "content": message}
+                    ],
+                    "max_tokens": 1000,
+                    "temperature": 0.7
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                return response.json()["choices"][0]["message"]["content"]
+            else:
+                raise CNCeraError(ErrorType.EXTERNAL_API_ERROR, f"OpenAI API error: {response.status_code}", "Ошибка API OpenAI")
+        
+        elif provider == "anthropic":
+            response = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "Content-Type": "application/json",
+                    "anthropic-version": "2023-06-01"
+                },
+                json={
+                    "model": "claude-3-sonnet-20240229",
+                    "max_tokens": 1000,
+                    "messages": [
+                        {"role": "user", "content": f"You are a CNC machining expert. {message}"}
+                    ]
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                return response.json()["content"][0]["text"]
+            else:
+                raise CNCeraError(ErrorType.EXTERNAL_API_ERROR, f"Anthropic API error: {response.status_code}", "Ошибка API Anthropic")
+        
+        elif provider == "xai":
+            response = requests.post(
+                "https://api.x.ai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "model": "grok-beta",
+                    "messages": [
+                        {"role": "system", "content": "You are a CNC machining expert. Provide helpful, accurate information about CNC operations, G-code, and manufacturing processes."},
+                        {"role": "user", "content": message}
+                    ],
+                    "max_tokens": 1000,
+                    "temperature": 0.7
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                return response.json()["choices"][0]["message"]["content"]
+            else:
+                raise CNCeraError(ErrorType.EXTERNAL_API_ERROR, f"xAI API error: {response.status_code}", "Ошибка API xAI")
+        
+        else:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "Unknown provider", "Неизвестный провайдер")
+            
+    except requests.exceptions.Timeout:
+        raise CNCeraError(ErrorType.EXTERNAL_API_ERROR, "API timeout", "Таймаут API")
+    except requests.exceptions.RequestException as e:
+        raise CNCeraError(ErrorType.EXTERNAL_API_ERROR, f"API request failed: {str(e)}", "Ошибка запроса API")
+    except Exception as e:
+        raise CNCeraError(ErrorType.EXTERNAL_API_ERROR, f"AI response generation failed: {str(e)}", "Ошибка генерации ответа ИИ")
+
 def generate_enhanced_milling_gcode(stl_path: Path, out_path: Path, **params) -> Dict:
     """Enhanced milling G-code generation with cutting parameters calculation"""
     start_time = time.time()
@@ -958,7 +507,7 @@ def generate_enhanced_milling_gcode(stl_path: Path, out_path: Path, **params) ->
         material = Material(group=material_group, grade=material_grade)
         tool = Tool(
             type="carbide_endmill",
-            diameter=validated_params.get("tool_diam", 3.0),
+            diameter=validated_params.get("tool_diam", 3.0),  # Fixed: use tool_diam instead of tool
             flutes=params.get("flutes", 2),
             corner_radius=params.get("corner_radius", 0.0)
         )
@@ -1056,7 +605,6 @@ def generate_enhanced_milling_gcode(stl_path: Path, out_path: Path, **params) ->
         )
         raise
 
-# ---- Other G-code generation functions ----
 def generate_chamfer_gcode(stl_path: Path, out_path: Path, **params) -> Dict:
     """Generate G-code for chamfering operations"""
     controller_settings = get_controller_settings(params.get("controller", "fanuc"))
@@ -1202,7 +750,481 @@ def generate_drilling_gcode(stl_path: Path, out_path: Path, **params) -> Dict:
         "origin": {"ox": center_x, "oy": center_y, "oz": zmax}
     }
 
-# Import routes from separate file
+# ---- HTML Template with Tailwind CSS ----
+INDEX_HTML = """
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CNCera — Enhanced 3D Analysis & G-code Generation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        #viewer { min-height: 400px; }
+        #log, #glog { white-space: pre-wrap; }
+        .tooltip { position: relative; }
+        .tooltip:hover::after {
+            content: attr(data-tooltip);
+            position: absolute; z-index: 10; bottom: 100%; left: 50%; transform: translateX(-50%);
+            background: #1f2937; color: #e5e7eb; padding: 4px 8px; border-radius: 4px;
+            font-size: 0.875rem; white-space: nowrap;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans p-6">
+    <div class="max-w-6xl mx-auto space-y-6">
+        <!-- Header with System Status -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+            <div class="flex justify-between items-center">
+                <h1 class="text-2xl font-bold text-blue-400">CNCera Enhanced</h1>
+                <div id="system_status" class="text-sm">
+                    <span class="px-2 py-1 bg-green-600 rounded">System Healthy</span>
+                </div>
+            </div>
+            <p class="text-gray-400 mt-2">Advanced 3D Analysis & G-code Generation with Enhanced Security & Monitoring</p>
+        </div>
+
+        <!-- File Upload Section -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-4">Загрузка и анализ файла</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Файл</label>
+                    <input id="file" type="file" accept=".step,.stp,.stl" class="block w-full text-sm text-gray-900 bg-gray-700 border border-gray-600 rounded-lg p-2 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:bg-blue-600 file:text-white hover:file:bg-blue-700">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Единицы</label>
+                    <select id="units" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        <option value="auto">Auto (mm)</option>
+                        <option value="mm">mm</option>
+                        <option value="inch">inch</option>
+                        <option value="m">m</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Линейное отклонение для сетки (мм)">LinearDeflection</label>
+                    <input id="linDef" type="number" step="0.01" value="0.1" min="0.01" max="10" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Угловое отклонение (градусы)">AngularDeflection (°)</label>
+                    <input id="angDef" type="number" step="0.5" value="15" min="0.01" max="89" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Relative</label>
+                    <input id="rel" type="checkbox" class="h-5 w-5 text-blue-600 bg-gray-700 border-gray-600 rounded">
+                </div>
+            </div>
+            <button onclick="analyze()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">Анализировать</button>
+            <div id="log" class="mt-4 text-gray-400"></div>
+        </div>
+
+        <!-- Analysis Results Section -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-4">Результат анализа</h2>
+            <div id="viewer" class="bg-gray-900 rounded-lg flex items-center justify-center"></div>
+            <div id="meta" class="mt-4"></div>
+            <p class="text-sm text-gray-500 mt-2">Офлайн-вьювер использует three.min.js, OrbitControls.js, STLLoader.js. Если они недоступны, отображается PNG.</p>
+        </div>
+
+        <!-- Enhanced G-code Generation Section -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-4">Генерация G-кода (Enhanced)</h2>
+
+            <!-- Controller and Operation Type Selection -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Контроллер</label>
+                    <select id="controller" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        <option value="fanuc">Fanuc</option>
+                        <option value="siemens">Siemens</option>
+                        <option value="heidenhain">Heidenhain</option>
+                        <option value="gsk">GSK</option>
+                        <option value="mazak">Mazak</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Тип обработки</label>
+                    <select id="operation_type" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100" onchange="toggleOperationSettings()">
+                        <option value="milling">Фрезерная</option>
+                        <option value="turning">Токарная</option>
+                        <option value="drilling">Сверление</option>
+                        <option value="chamfer">Фаска</option>
+                        <option value="roughing">Черновая обработка</option>
+                        <option value="finishing">Финишная обработка</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">G54 (начало координат)</label>
+                    <select id="origin" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        <option value="bbox_min">Нижний угол</option>
+                        <option value="bbox_center">Центр низа</option>
+                        <option value="bbox_top_center">Центр верха</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Enhanced Material Selection -->
+            <div class="mb-6">
+                <h3 class="text-lg font-medium mb-3">Материал и инструмент</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Марка материала</label>
+                        <select id="material_grade" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                            <option value="42CrMo4">42CrMo4 (Сталь)</option>
+                            <option value="Al6061">Al6061 (Алюминий)</option>
+                            <option value="316L">316L (Нержавеющая)</option>
+                            <option value="GG25">GG25 (Чугун)</option>
+                            <option value="Ti6Al4V">Ti6Al4V (Титан)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Диаметр инструмента (мм)">Ø инструмента, мм</label>
+                        <input id="tool" type="number" value="3" step="0.1" min="0.1" max="50" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Число зубьев</label>
+                        <input id="flutes" type="number" value="2" step="1" min="1" max="8" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Радиус угла, мм</label>
+                        <input id="corner_radius" type="number" value="0" step="0.1" min="0" max="5" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tool Parameters -->
+            <div class="mb-6">
+                <h3 class="text-lg font-medium mb-3">Параметры инструмента</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Скорость шпинделя (об/мин)">Spindle, об/мин</label>
+                        <input id="spindle" type="number" value="8000" step="100" min="1000" max="24000" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Общая подача (мм/мин)">Feed, мм/мин</label>
+                        <input id="feed" type="number" value="300" step="10" min="10" max="5000" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Скорость погружения (мм/мин)">Plunge, мм/мин</label>
+                        <input id="plunge" type="number" value="120" step="10" min="10" max="2000" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Безопасная высота по Z (мм)">Clearance Z, мм</label>
+                        <input id="clearance" type="number" value="5" step="0.5" min="1" max="50" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Milling Specific Settings -->
+            <div id="milling_settings" class="mb-6">
+                <h3 class="text-lg font-medium mb-3">Настройки фрезерования</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Доля диаметра инструмента (0.05—0.95)">Степовер</label>
+                        <input id="stepover" type="number" value="0.4" step="0.05" min="0.05" max="0.95" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Шаг по Z для черновой обработки">Stepdown Z, мм</label>
+                        <input id="stepdown" type="number" value="0" step="0.5" min="0" max="50" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Ось проходов</label>
+                        <select id="dir" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                            <option>X</option>
+                            <option>Y</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Waterline</label>
+                        <input id="waterline" type="checkbox" class="h-5 w-5 text-blue-600 bg-gray-700 border-gray-600 rounded">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Allowance Settings -->
+            <div class="mb-6">
+                <h3 class="text-lg font-medium mb-3">Ручные припуски</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Припуск по оси X">Припуск X, мм</label>
+                        <input id="allowance_x" type="number" value="0" step="0.1" min="-10" max="10" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Припуск по оси Y">Припуск Y, мм</label>
+                        <input id="allowance_y" type="number" value="0" step="0.1" min="-10" max="10" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Припуск по оси Z">Припуск Z, мм</label>
+                        <input id="allowance_z" type="number" value="0" step="0.1" min="-10" max="10" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex items-center space-x-4">
+                <button onclick="gen()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">Сгенерировать Enhanced G-код</button>
+                <span id="glog" class="text-gray-400"></span>
+            </div>
+        </div>
+
+        <!-- System Monitoring -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-4">Мониторинг системы</h2>
+            <div id="system_metrics" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="bg-gray-700 p-4 rounded-lg">
+                    <h3 class="text-sm text-gray-400">Всего запросов</h3>
+                    <p id="total_requests" class="text-2xl font-bold text-blue-400">0</p>
+                </div>
+                <div class="bg-gray-700 p-4 rounded-lg">
+                    <h3 class="text-sm text-gray-400">Успешность</h3>
+                    <p id="success_rate" class="text-2xl font-bold text-green-400">100%</p>
+                </div>
+                <div class="bg-gray-700 p-4 rounded-lg">
+                    <h3 class="text-sm text-gray-400">Время работы</h3>
+                    <p id="uptime" class="text-2xl font-bold text-yellow-400">0s</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let LAST_MODEL_PATH = null;
+
+        function loadScript(path) {
+            return new Promise(resolve => {
+                const s = document.createElement('script');
+                s.src = path;
+                s.onload = () => resolve(true);
+                s.onerror = () => resolve(false);
+                document.head.appendChild(s);
+            });
+        }
+
+        function toggleOperationSettings() {
+            const operationType = document.getElementById('operation_type').value;
+            const millingSettings = document.getElementById('milling_settings');
+            millingSettings.style.display = (operationType === 'milling' || operationType === 'roughing' || operationType === 'finishing' || operationType === 'chamfer') ? 'block' : 'none';
+        }
+
+        async function tryViewer(stlUrl) {
+            const threeOk = await loadScript('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js');
+            if (!threeOk || !window.THREE) return false;
+
+            const orbitOk = await loadScript('https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/controls/OrbitControls.js');
+            const stlOk = await loadScript('https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/loaders/STLLoader.js');
+            if (!window.THREE || !THREE.STLLoader || !THREE.OrbitControls) {
+                return false;
+            }
+
+            const viewer = document.getElementById('viewer');
+            viewer.innerHTML = '';
+            const canvas = document.createElement('div');
+            canvas.className = 'w-full h-[400px]';
+            viewer.appendChild(canvas);
+
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0b1b24);
+            const w = canvas.clientWidth, h = canvas.clientHeight;
+            const aspect = w / h;
+            const cam = new THREE.PerspectiveCamera(75, aspect, 0.1, 10000);
+            cam.position.set(150, 120, 140);
+            cam.lookAt(0, 0, 0);
+
+            const renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(w, h);
+            canvas.appendChild(renderer.domElement);
+
+            const controls = new THREE.OrbitControls(cam, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.1;
+
+            const light1 = new THREE.DirectionalLight(0xffffff, 0.8);
+            light1.position.set(1, 1, 1);
+            scene.add(light1);
+            const light2 = new THREE.DirectionalLight(0xffffff, 0.5);
+            light2.position.set(-1, -1, -1);
+            scene.add(light2);
+            const amb = new THREE.AmbientLight(0x88aacc, 0.3);
+            scene.add(amb);
+
+            const loader = new THREE.STLLoader();
+            loader.load(stlUrl, geo => {
+                const mat = new THREE.MeshPhongMaterial({ color: 0x88aaff, specular: 0x222222, shininess: 30 });
+                const mesh = new THREE.Mesh(geo, mat);
+                geo.computeBoundingBox();
+                const bb = geo.boundingBox;
+
+                const size = bb.getSize(new THREE.Vector3());
+                const center = bb.getCenter(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+
+                mesh.position.set(-center.x, -center.y, -center.z);
+                scene.add(mesh);
+
+                const cameraDistance = maxDim * 2;
+                cam.position.set(cameraDistance, cameraDistance * 0.8, cameraDistance * 0.8);
+                cam.lookAt(0, 0, 0);
+                controls.update();
+
+                (function loop() {
+                    requestAnimationFrame(loop);
+                    controls.update();
+                    renderer.render(scene, cam);
+                })();
+            });
+            return true;
+        }
+
+        async function analyze() {
+            const file = document.getElementById('file').files[0];
+            const log = document.getElementById('log');
+            if (!file) {
+                log.textContent = 'Выберите файл';
+                return;
+            }
+            if (file.size > 100 * 1024 * 1024) {
+                log.textContent = 'Файл слишком большой (макс. 100 МБ)';
+                return;
+            }
+            log.textContent = 'Загрузка...';
+            const fd = new FormData();
+            fd.append('file', file);
+            fd.append('units', document.getElementById('units').value || 'auto');
+            fd.append('linear_deflection', document.getElementById('linDef').value || '0.1');
+            fd.append('angular_deflection_deg', document.getElementById('angDef').value || '15');
+            fd.append('relative', document.getElementById('rel').checked ? 'true' : 'false');
+
+            try {
+                const r = await fetch('/upload', { method: 'POST', body: fd });
+                const data = await r.json();
+                if (!data.success) {
+                    log.textContent = 'Ошибка: ' + (data.error || 'Неизвестная ошибка');
+                    return;
+                }
+                LAST_MODEL_PATH = data.model_path;
+                const links = [];
+                if (data.model_path) {
+                    links.push(`<a href="${data.model_path}" target="_blank" class="text-blue-400 hover:underline">Скачать STL</a>`);
+                }
+                if (data.result_filename) {
+                    links.push(`<a href="/download_results?filename=${data.result_filename}" target="_blank" class="text-blue-400 hover:underline">JSON-результат</a>`);
+                }
+                log.innerHTML = 'Готово — ' + links.join(' · ');
+
+                const viewer = document.getElementById('viewer');
+                let viewerOK = false;
+                if (data.model_path) {
+                    viewerOK = await tryViewer(data.model_path);
+                }
+                if (!viewerOK) {
+                    viewer.innerHTML = data.preview_png_data
+                        ? `<img src="${data.preview_png_data}" alt="preview" class="max-w-full max-h-full object-contain rounded-lg">`
+                        : data.preview_png
+                        ? `<img src="${data.preview_png}" alt="preview" class="max-w-full max-h-full object-contain rounded-lg">`
+                        : '<div class="text-gray-400 p-8">PNG предпросмотр недоступен</div>';
+                }
+
+                const meta = document.getElementById('meta');
+                const rows = [];
+                function push(k, v) {
+                    rows.push(`<tr class="border-b border-gray-700"><td class="py-2 px-4">${k}</td><td class="py-2 px-4">${v}</td></tr>`);
+                }
+                if (data.file_info) {
+                    push('Файл', data.file_info.filename);
+                    push('Размер файла', `${data.file_info.file_size} байт`);
+                    push('Тип файла', data.file_info.file_type);
+                }
+                if (data.geometry && data.geometry.dimensions) {
+                    const d = data.geometry.dimensions;
+                    push('Размеры (мм)', `${d.length} × ${d.width} × ${d.height}`);
+                }
+                if (data.mesh_info) {
+                    push('Вершины', data.mesh_info.vertices);
+                    push('Грани', data.mesh_info.faces);
+                }
+                meta.innerHTML = `<table class="w-full border-collapse"><thead><tr class="bg-gray-700"><th class="py-2 px-4 text-left">Параметр</th><th class="py-2 px-4 text-left">Значение</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+            } catch (err) {
+                log.textContent = 'Сетевая ошибка: ' + err;
+            }
+        }
+
+        async function gen() {
+            const glog = document.getElementById('glog');
+            if (!LAST_MODEL_PATH) {
+                glog.textContent = 'Сначала загрузите модель.';
+                return;
+            }
+
+            const operationType = document.getElementById('operation_type').value;
+            const controller = document.getElementById('controller').value;
+
+            const payload = {
+                model_path: LAST_MODEL_PATH,
+                controller: controller,
+                operation_type: operationType,
+                material_grade: document.getElementById('material_grade').value,
+                tool_diam: parseFloat(document.getElementById('tool').value || '3'),  // Fixed: use tool_diam
+                flutes: parseInt(document.getElementById('flutes').value || '2'),
+                corner_radius: parseFloat(document.getElementById('corner_radius').value || '0'),
+                feed: parseFloat(document.getElementById('feed').value || '300'),
+                plunge: parseFloat(document.getElementById('plunge').value || '120'),
+                clearance: parseFloat(document.getElementById('clearance').value || '5'),
+                spindle: parseInt(document.getElementById('spindle').value || '8000'),
+                origin: document.getElementById('origin').value || 'bbox_min',
+                allowance_x: parseFloat(document.getElementById('allowance_x').value || '0'),
+                allowance_y: parseFloat(document.getElementById('allowance_y').value || '0'),
+                allowance_z: parseFloat(document.getElementById('allowance_z').value || '0')
+            };
+
+            if (operationType === 'milling' || operationType === 'roughing' || operationType === 'finishing' || operationType === 'chamfer') {
+                payload.stepover = parseFloat(document.getElementById('stepover').value || '0.4');
+                payload.stepdown = parseFloat(document.getElementById('stepdown').value || '0');
+                payload.dir = document.getElementById('dir').value || 'X';
+                payload.waterline = document.getElementById('waterline').checked;
+            }
+
+            glog.textContent = 'Генерация Enhanced G-кода...';
+            try {
+                const r = await fetch('/generate_gcode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await r.json();
+                if (!data.success) {
+                    glog.textContent = 'Ошибка: ' + (data.error || '');
+                    return;
+                }
+                glog.innerHTML = `Готово — <a href="${data.gcode_path}" target="_blank" class="text-blue-400 hover:underline">скачать Enhanced G-код (${controller.toUpperCase()} ${operationType})</a>`;
+            } catch (err) {
+                glog.textContent = 'Сетевая ошибка: ' + err;
+            }
+        }
+
+        // Update system metrics
+        async function updateMetrics() {
+            try {
+                const r = await fetch('/metrics');
+                const data = await r.json();
+                if (data.success) {
+                    document.getElementById('total_requests').textContent = data.total_requests || 0;
+                    document.getElementById('success_rate').textContent = (data.success_rate || 100).toFixed(1) + '%';
+                    document.getElementById('uptime').textContent = Math.floor((data.uptime_seconds || 0) / 60) + 'm';
+                }
+            } catch (e) {
+                console.log('Metrics update failed:', e);
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            toggleOperationSettings();
+            updateMetrics();
+            setInterval(updateMetrics, 30000); // Update every 30 seconds
+        });
+    </script>
+</body>
+</html>
+"""
 
 # ---- Routes ----
 @app.route("/")
@@ -1273,356 +1295,432 @@ def health_check():
         error = error_handler.handle_exception(e, "Health check")
         return jsonify({
             "status": "error",
-            "error": error.user_message,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "error": error.user_message
         }), 500
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    disk_path = None
+    """Upload and analyze 3D file with enhanced error handling"""
     start_time = time.time()
     
     try:
         if "file" not in request.files:
-            return jsonify({"success": False, "error": "Нет файла"})
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "No file provided", "Файл не выбран")
+        
         file = request.files["file"]
-        if file.filename == "":
-            return jsonify({"success": False, "error": "Не выбран файл"})
+        if not file or file.filename == "":
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "No file selected", "Файл не выбран")
         
-        # Enhanced security validation
-        if not allowed_file(file.filename):
-            return jsonify({"success": False, "error": "Неподдерживаемый формат файла или небезопасное имя файла"})
+        # Validate filename
+        if not SecurityValidator.validate_filename(file.filename):
+            raise CNCeraError(ErrorType.SECURITY_ERROR, "Invalid filename", "Недопустимое имя файла")
         
-        max_len = app.config.get("MAX_CONTENT_LENGTH")
-        sz = get_uploaded_size(file)
-        if isinstance(max_len, int) and max_len > 0 and isinstance(sz, int) and sz > max_len:
-            return jsonify({"success": False, "error": "Файл слишком большой (макс. 100 МБ)"})
-
-        filename = secure_filename(file.filename)
-        disk_path = TEMP / filename
-        file.save(str(disk_path))
-
-        units = request.form.get("units", "auto").lower()
-        linear_deflection = validate_float(request.form.get("linear_deflection", 0.1), 0.1, 0.01, 10.0)
-        angular_deflection_deg = validate_float(request.form.get("angular_deflection_deg", 15), 15.0, 0.01, 89.0)
-        relative = request.form.get("relative", "false").lower() in ("1", "true", "yes", "on")
-
-        ext = disk_path.suffix.lower()
-        res = {}
-        stl_name = hashlib.md5(str(disk_path).encode()).hexdigest() + ".stl"
-        stl_abs = MODELS / stl_name
-
-        if ext in (".step", ".stp"):
-            info = freecad_export_step_to_stl(
-                disk_path, stl_abs, linear_deflection, angular_deflection_deg, relative, units
-            )
-            res.update(info)
-        elif ext == ".stl":
-            shutil.copyfile(str(disk_path), str(stl_abs))
-            res.update({
-                "success": True,
-                "file_info": {
-                    "filename": filename,
-                    "file_type": ".stl",
-                    "file_size": disk_path.stat().st_size
-                },
-                "geometry": {
-                    "dimensions": {"length": 0, "width": 0, "height": 0},
-                    "units": "mm"
-                }
-            })
-        else:
-            return jsonify({"success": False, "error": "Неподдерживаемый тип файла"})
-
-        res["model_path"] = f"/models/{stl_name}"
-        res["mesh_info"] = analyze_stl(stl_abs)
-        result_name = f"result_{hashlib.md5(str(disk_path).encode()).hexdigest()}.json"
-        (TEMP / result_name).write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
-        res["result_filename"] = result_name
-
-        png_abs = MODELS / (Path(stl_name).with_suffix(".png").name)
-        if not png_abs.exists():
-            render_stl_to_png(stl_abs, png_abs)
-        if png_abs.exists():
-            res["preview_png"] = f"/models/{png_abs.name}"
+        # Get parameters with validation
+        units = request.form.get("units", "auto")
+        linear_deflection = float(request.form.get("linear_deflection", "0.1"))
+        angular_deflection_deg = float(request.form.get("angular_deflection_deg", "15"))
+        relative = request.form.get("relative", "false").lower() == "true"
+        
+        # Validate parameters
+        if linear_deflection <= 0 or linear_deflection > 10:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "Invalid linear deflection", "Недопустимое линейное отклонение")
+        if angular_deflection_deg <= 0 or angular_deflection_deg > 89:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "Invalid angular deflection", "Недопустимое угловое отклонение")
+        
+        # Check file size
+        file.seek(0, 2)  # Seek to end
+        file_size = file.tell()
+        file.seek(0)  # Reset to beginning
+        
+        if file_size > 100 * 1024 * 1024:  # 100MB limit
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "File too large", "Файл слишком большой (макс. 100 МБ)")
+        
+        # Process file
+        result = process_uploaded_file(
+            file, units, linear_deflection, angular_deflection_deg, relative
+        )
+        
+        processing_time = time.time() - start_time
+        metrics_collector.record_processing(
+            "file_upload", 
+            file_size, 
+            processing_time, 
+            True
+        )
+        
+        return jsonify({
+            "success": True,
+            "model_path": result.get("model_path"),
+            "result_filename": result.get("result_filename"),
+            "preview_png": result.get("preview_png"),
+            "preview_png_data": result.get("preview_png_data"),
+            "file_info": result.get("file_info"),
+            "geometry": result.get("geometry"),
+            "mesh_info": result.get("mesh_info"),
+            "processing_time": processing_time
+        })
+        
+    except CNCeraError as e:
+        processing_time = time.time() - start_time
+        file_size = 0
+        if "file" in request.files and request.files["file"]:
             try:
-                res["preview_png_data"] = "data:image/png;base64," + base64.b64encode(png_abs.read_bytes()).decode("ascii")
-            except Exception as e:
-                logger.warning(f"PNG base64 embed failed: {e}")
-
-        # Record successful processing
-        processing_time = time.time() - start_time
-        metrics_collector.record_processing("file_upload", sz, processing_time, True)
-
-        return jsonify(res)
+                request.files["file"].seek(0, 2)
+                file_size = request.files["file"].tell()
+                request.files["file"].seek(0)
+            except:
+                pass
         
-    except FileNotFoundError as e:
-        processing_time = time.time() - start_time
-        error = error_handler.handle_exception(e, "File upload")
-        metrics_collector.record_processing("file_upload", 0, processing_time, False, error.error_type.value)
-        return jsonify({"success": False, "error": str(e)})
-    except subprocess.TimeoutExpired:
-        processing_time = time.time() - start_time
-        error = error_handler.handle_exception(subprocess.TimeoutExpired("FreeCAD timeout"), "File upload")
-        metrics_collector.record_processing("file_upload", 0, processing_time, False, error.error_type.value)
-        return jsonify({"success": False, "error": "Таймаут запуска FreeCADCmd"})
+        metrics_collector.record_processing(
+            "file_upload", 
+            file_size, 
+            processing_time, 
+            False,
+            e.error_type.value
+        )
+        
+        return jsonify({"success": False, "error": e.user_message}), 400
+        
     except Exception as e:
         processing_time = time.time() - start_time
         error = error_handler.handle_exception(e, "File upload")
-        metrics_collector.record_processing("file_upload", 0, processing_time, False, error.error_type.value)
-        logger.error("Upload failed: %s", e, exc_info=True)
-        return jsonify({"success": False, "error": f"Критическая ошибка: {str(e)}"})
-    finally:
-        if disk_path and disk_path.exists():
+        
+        file_size = 0
+        if "file" in request.files and request.files["file"]:
             try:
-                disk_path.unlink()
-            except Exception:
+                request.files["file"].seek(0, 2)
+                file_size = request.files["file"].tell()
+                request.files["file"].seek(0)
+            except:
                 pass
+        
+        metrics_collector.record_processing(
+            "file_upload", 
+            file_size, 
+            processing_time, 
+            False,
+            error.error_type.value
+        )
+        
+        return jsonify({"success": False, "error": error.user_message}), 500
 
 @app.route("/generate_gcode", methods=["POST"])
-def generate_gcode_route():
+def generate_gcode():
+    """Generate G-code with enhanced parameters"""
     start_time = time.time()
     
     try:
-        data = request.get_json(force=True, silent=True) or {}
+        data = request.get_json()
+        if not data:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "No JSON data", "Данные не получены")
+        
         model_path = data.get("model_path")
-        if not model_path or not model_path.startswith("/models/"):
-            return jsonify({"success": False, "error": "Некорректный model_path"})
-        stl_abs = MODELS / Path(model_path).name
-        if not stl_abs.exists():
-            return jsonify({"success": False, "error": "STL не найден"})
-
-        controller = data.get("controller", "fanuc")
-        operation_type = data.get("operation_type", "milling")
-
-        # Enhanced parameter validation
+        if not model_path:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "No model path", "Путь к модели не указан")
+        
+        # Validate model path
+        if not SecurityValidator.validate_filename(Path(model_path).name):
+            raise CNCeraError(ErrorType.SECURITY_ERROR, "Invalid model path", "Недопустимый путь к модели")
+        
+        model_file = Path(model_path)
+        if not model_file.exists():
+            raise CNCeraError(ErrorType.FILE_ERROR, "Model file not found", "Файл модели не найден")
+        
+        # Validate and sanitize parameters
         validated_params = SecurityValidator.validate_gcode_params(data)
         
-        allowance_x = validate_float(data.get("allowance_x", 0.0), 0.0, -10.0, 10.0)
-        allowance_y = validate_float(data.get("allowance_y", 0.0), 0.0, -10.0, 10.0)
-        allowance_z = validate_float(data.get("allowance_z", 0.0), 0.0, -10.0, 10.0)
-
-        if operation_type in ("milling", "roughing", "finishing", "chamfer"):
-            params = {
-                "tool_diam": validated_params.get("tool_diam", 3.0),
-                "stepover": validated_params.get("stepover", 0.4),
-                "feed": validated_params.get("feed", 300.0),
-                "plunge": validated_params.get("plunge", 120.0),
-                "clearance": validated_params.get("clearance", 5.0),
-                "spindle": validated_params.get("spindle", 8000) if data.get("spindle") else None,
-                "dir_axis": str(data.get("dir", "X")).upper(),
-                "origin": str(data.get("origin", "bbox_min")),
-                "stepdown": validated_params.get("stepdown", 0.0),
-                "waterline": bool(data.get("waterline", False)),
-                "waterline_dz": validate_float(data.get("waterline_dz", 0.0), 0.0, 0.0, 50.0),
-                "finish_stepover": validate_float(data.get("finish_stepover", 0.0), 0.4, 0.05, 0.95) or None,
-                "allowance_x": allowance_x,
-                "allowance_y": allowance_y,
-                "allowance_z": allowance_z,
-                "controller": controller,
-                "operation_type": operation_type,
-                "material_grade": data.get("material_grade", "42CrMo4"),
-                "flutes": validate_int(data.get("flutes", 2), 2, 1, 8),
-                "corner_radius": validate_float(data.get("corner_radius", 0.0), 0.0, 0.0, 5.0)
-            }
-
-            gname = f"gcode_{controller}_{operation_type}_{Path(stl_abs).stem}.nc"
-            gout = TEMP / gname
-
-            if operation_type == "chamfer":
-                meta = generate_chamfer_gcode(stl_abs, gout, **params)
-            else:
-                # Use enhanced milling generation
-                meta = generate_enhanced_milling_gcode(stl_abs, gout, **params)
-
+        # Generate G-code based on operation type
+        operation_type = validated_params.get("operation_type", "milling")
+        
+        # Create output filename
+        controller = validated_params.get("controller", "fanuc")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"{operation_type}_{controller}_{timestamp}.nc"
+        output_path = MODELS / output_filename
+        
+        # Generate G-code
+        if operation_type in ["milling", "roughing", "finishing"]:
+            result = generate_enhanced_milling_gcode(model_file, output_path, **validated_params)
         elif operation_type == "turning":
-            params = {
-                "tool_diam": validated_params.get("tool_diam", 3.0),
-                "workpiece_diameter": validate_float(data.get("workpiece_diameter", 50.0), 50.0, 1.0, 500.0),
-                "cut_depth": validate_float(data.get("cut_depth", 1.0), 1.0, 0.1, 10.0),
-                "feed": validated_params.get("feed", 300.0),
-                "feed_per_rev": validate_float(data.get("feed_per_rev", 0.2), 0.2, 0.01, 2.0),
-                "spindle": validated_params.get("spindle", 1000),
-                "clearance": validated_params.get("clearance", 5.0),
-                "turning_type": str(data.get("turning_type", "roughing")),
-                "controller": controller
-            }
-
-            gname = f"gcode_{controller}_turning_{Path(stl_abs).stem}.nc"
-            gout = TEMP / gname
-            meta = generate_turning_gcode(stl_abs, gout, **params)
-
+            result = generate_turning_gcode(model_file, output_path, **validated_params)
         elif operation_type == "drilling":
-            params = {
-                "drill_diameter": validate_float(data.get("drill_diameter", 6.0), 6.0, 0.5, 50.0),
-                "drill_depth": validate_float(data.get("drill_depth", 10.0), 10.0, 1.0, 100.0),
-                "feed": validated_params.get("feed", 300.0),
-                "spindle": validated_params.get("spindle", 8000),
-                "clearance": validated_params.get("clearance", 5.0),
-                "drill_cycle": str(data.get("drill_cycle", "G81")),
-                "peck_depth": validate_float(data.get("peck_depth", 2.0), 2.0, 0.1, 10.0),
-                "controller": controller
-            }
-
-            gname = f"gcode_{controller}_drilling_{Path(stl_abs).stem}.nc"
-            gout = TEMP / gname
-            meta = generate_drilling_gcode(stl_abs, gout, **params)
+            result = generate_drilling_gcode(model_file, output_path, **validated_params)
+        elif operation_type == "chamfer":
+            result = generate_chamfer_gcode(model_file, output_path, **validated_params)
         else:
-            return jsonify({"success": False, "error": "Неподдерживаемый тип операции"})
-
-        # Record successful G-code generation
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "Unknown operation type", "Неизвестный тип операции")
+        
         processing_time = time.time() - start_time
-        metrics_collector.record_processing(f"gcode_{operation_type}", stl_abs.stat().st_size, processing_time, True)
-
+        metrics_collector.record_processing(
+            f"gcode_{operation_type}", 
+            model_file.stat().st_size, 
+            processing_time, 
+            True
+        )
+        
         return jsonify({
             "success": True,
-            "gcode_path": f"/download_gcode?name={gname}",
-            "grid": meta.get("grid", {}),
-            "origin": meta.get("origin", {}),
-            "controller": controller,
-            "operation": operation_type,
-            "cutting_params": meta.get("cutting_params", {}),
-            "material": meta.get("material", {}),
-            "tool": meta.get("tool", {}),
+            "gcode_path": f"/models/{output_filename}",
+            "bbox": result.get("bbox"),
+            "cutting_params": result.get("cutting_params"),
+            "material": result.get("material"),
+            "tool": result.get("tool"),
             "processing_time": processing_time
         })
+        
+    except CNCeraError as e:
+        processing_time = time.time() - start_time
+        model_size = 0
+        if "model_path" in data and data["model_path"]:
+            try:
+                model_size = Path(data["model_path"]).stat().st_size
+            except:
+                pass
+        
+        metrics_collector.record_processing(
+            f"gcode_{data.get('operation_type', 'unknown')}", 
+            model_size, 
+            processing_time, 
+            False,
+            e.error_type.value
+        )
+        
+        return jsonify({"success": False, "error": e.user_message}), 400
         
     except Exception as e:
         processing_time = time.time() - start_time
         error = error_handler.handle_exception(e, "G-code generation")
+        
+        model_size = 0
+        if "model_path" in data and data["model_path"]:
+            try:
+                model_size = Path(data["model_path"]).stat().st_size
+            except:
+                pass
+        
         metrics_collector.record_processing(
             f"gcode_{data.get('operation_type', 'unknown')}", 
-            0, 
+            model_size, 
             processing_time, 
-            False, 
+            False,
             error.error_type.value
         )
-        logger.error("G-code generation failed: %s", e, exc_info=True)
-        return jsonify({"success": False, "error": str(e)})
+        
+        return jsonify({"success": False, "error": error.user_message}), 500
 
 @app.route("/download_gcode")
 def download_gcode():
-    name = request.args.get("name", "")
-    path = TEMP / name
-    if not name or not path.exists():
-        return "Файл не найден", 404
-    return send_file(str(path), as_attachment=True, download_name=name, mimetype="text/plain")
+    """Download generated G-code file"""
+    filename = request.args.get("filename", "")
+    if not filename:
+        return "Filename required", 400
+    
+    # Validate filename
+    if not SecurityValidator.validate_filename(filename):
+        return "Invalid filename", 400
+    
+    file_path = MODELS / filename
+    if not file_path.exists():
+        return "File not found", 404
+    
+    return send_file(
+        str(file_path), 
+        as_attachment=True, 
+        mimetype="text/plain",
+        download_name=filename
+    )
 
 @app.route("/gcode_preview")
 def gcode_preview():
-    name = (request.args.get("name") or "").strip()
+    """Preview G-code content - JSON API version"""
+    name = request.args.get("name", "")
     if not name:
-        return jsonify({"success": False, "error": "Parameter 'name' is required"}), 400
-    safe_name = Path(name).name  # prevent path traversal
-    path = TEMP / safe_name
-    if not path.exists() or not path.is_file():
-        return jsonify({"success": False, "error": "G-code file not found"}), 404
+        return jsonify({"success": False, "error": "Name parameter required"}), 400
+    
+    # Validate filename
+    if not SecurityValidator.validate_filename(name):
+        return jsonify({"success": False, "error": "Invalid filename"}), 400
+    
+    file_path = MODELS / name
+    if not file_path.exists():
+        return jsonify({"success": False, "error": "File not found"}), 404
+    
     try:
-        lines = []
-        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
-            for i, line in enumerate(fh):
-                if i >= 40:
-                    break
-                lines.append(line.rstrip("\n\r"))
-        return jsonify({"success": True, "name": safe_name, "lines": lines})
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+        
+        # Get first 40 lines
+        lines = content.split('\n')
+        preview_lines = lines[:40]
+        
+        return jsonify({
+            "success": True,
+            "lines": preview_lines,
+            "total_lines": len(lines),
+            "showing": len(preview_lines)
+        })
+        
     except Exception as e:
-        return jsonify({"success": False, "error": f"Read error: {e}"}), 500
+        error = error_handler.handle_exception(e, "G-code preview")
+        return jsonify({"success": False, "error": error.user_message}), 500
 
 @app.route("/chat", methods=["POST"])
 def chat():
+    """AI chat endpoint with enhanced error handling"""
+    start_time = time.time()
+    
     try:
-        data = request.get_json(force=True, silent=True) or {}
-        provider = (data.get("provider") or "").strip().lower()
-        model = (data.get("model") or "").strip()
-        message = (data.get("message") or "").strip()
-        if not provider or not message:
-            return jsonify({"success": False, "error": "Provide 'provider' and 'message'"}), 400
-
-        # Defaults
+        data = request.get_json()
+        if not data:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "No JSON data", "Данные не получены")
+        
+        message = data.get("message", "").strip()
+        if not message:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "Empty message", "Сообщение пустое")
+        
+        # Validate message length
+        if len(message) > 10000:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "Message too long", "Сообщение слишком длинное")
+        
+        # Validate message content (basic security check)
+        if not re.match(r'^[a-zA-Z0-9\s\.,!?\-_()\[\]{}:;"\'@#$%^&*+=<>/\\|`~а-яА-ЯёЁ]+$', message):
+            raise CNCeraError(ErrorType.SECURITY_ERROR, "Invalid characters in message", "Недопустимые символы в сообщении")
+        
+        provider = data.get("provider", "openai").lower()
+        if provider not in ["openai", "anthropic", "xai"]:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "Invalid provider", "Недопустимый провайдер")
+        
+        # Get API key from environment
+        api_key = None
         if provider == "openai":
-            api_key = os.environ.get("OPENAI_API_KEY", "")
-            if not api_key:
-                return jsonify({"success": False, "error": "OPENAI_API_KEY not set"}), 400
-            if not model:
-                model = "gpt-4o-mini"
-            url = "https://api.openai.com/v1/chat/completions"
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": message}],
-                "temperature": float(data.get("temperature", 0.2)),
-            }
-            r = requests.post(url, headers=headers, json=payload, timeout=60)
-            if r.status_code >= 400:
-                return jsonify({"success": False, "error": f"OpenAI: {r.status_code} {r.text[:300]}"}), 400
-            j = r.json()
-            text = (j.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
-
-        elif provider in ("anthropic", "claude"):
-            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-            if not api_key:
-                return jsonify({"success": False, "error": "ANTHROPIC_API_KEY not set"}), 400
-            if not model:
-                model = "claude-3-5-haiku-latest"
-            url = "https://api.anthropic.com/v1/messages"
-            headers = {
-                "x-api-key": api_key,
-                "content-type": "application/json",
-                "anthropic-version": "2023-06-01",
-            }
-            payload = {
-                "model": model,
-                "max_tokens": 1000,
-                "messages": [{"role": "user", "content": message}],
-            }
-            r = requests.post(url, headers=headers, json=payload, timeout=60)
-            if r.status_code >= 400:
-                return jsonify({"success": False, "error": f"Anthropic: {r.status_code} {r.text[:300]}"}), 400
-            j = r.json()
-            blocks = j.get("content") or []
-            text_parts = []
-            for b in blocks:
-                if isinstance(b, dict) and b.get("type") == "text":
-                    text_parts.append(b.get("text", ""))
-            text = "\n".join(tp for tp in text_parts if tp).strip()
-
-        elif provider in ("grok", "xai", "x-ai", "x_ai"):
-            api_key = os.environ.get("XAI_API_KEY", "")
-            if not api_key:
-                return jsonify({"success": False, "error": "XAI_API_KEY not set"}), 400
-            if not model:
-                model = "grok-2-latest"
-            url = "https://api.x.ai/v1/chat/completions"
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": message}],
-                "temperature": float(data.get("temperature", 0.2)),
-            }
-            r = requests.post(url, headers=headers, json=payload, timeout=60)
-            if r.status_code >= 400:
-                return jsonify({"success": False, "error": f"xAI: {r.status_code} {r.text[:300]}"}), 400
-            j = r.json()
-            text = (j.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
-        else:
-            return jsonify({"success": False, "error": "Unsupported provider. Use: openai, anthropic, grok"}), 400
-
-        return jsonify({"success": True, "provider": provider, "model": model, "reply": text})
+            api_key = os.getenv("OPENAI_API_KEY")
+        elif provider == "anthropic":
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+        elif provider == "xai":
+            api_key = os.getenv("XAI_API_KEY")
+        
+        if not api_key:
+            raise CNCeraError(ErrorType.CONFIGURATION_ERROR, "API key not configured", "API ключ не настроен")
+        
+        # Generate response
+        response = generate_ai_response(message, provider, api_key)
+        
+        processing_time = time.time() - start_time
+        metrics_collector.record_processing(
+            f"chat_{provider}", 
+            len(message), 
+            processing_time, 
+            True
+        )
+        
+        return jsonify({
+            "success": True,
+            "response": response,
+            "provider": provider,
+            "processing_time": processing_time
+        })
+        
+    except CNCeraError as e:
+        processing_time = time.time() - start_time
+        message_length = len(data.get("message", "")) if data else 0
+        
+        metrics_collector.record_processing(
+            f"chat_{data.get('provider', 'unknown')}", 
+            message_length, 
+            processing_time, 
+            False,
+            e.error_type.value
+        )
+        
+        return jsonify({"success": False, "error": e.user_message}), 400
+        
     except Exception as e:
-        return jsonify({"success": False, "error": f"Chat error: {e}"}), 500
+        processing_time = time.time() - start_time
+        error = error_handler.handle_exception(e, "AI chat")
+        
+        message_length = len(data.get("message", "")) if data else 0
+        
+        metrics_collector.record_processing(
+            f"chat_{data.get('provider', 'unknown')}", 
+            message_length, 
+            processing_time, 
+            False,
+            error.error_type.value
+        )
+        
+        return jsonify({"success": False, "error": error.user_message}), 500
 
+# ---- Error handlers ----
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"success": False, "error": "Endpoint not found"}), 404
+
+@app.errorhandler(405)
+def method_not_allowed(error):
+    return jsonify({"success": False, "error": "Method not allowed"}), 405
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    return jsonify({"success": False, "error": "File too large"}), 413
+
+@app.errorhandler(500)
+def internal_error(error):
+    error_obj = error_handler.handle_exception(error, "Internal server error")
+    return jsonify({"success": False, "error": error_obj.user_message}), 500
+
+# ---- Main execution ----
 if __name__ == "__main__":
-    logger.info("Starting Enhanced CNCera server...")
+    # Initialize logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('cncera.log'),
+            logging.StreamHandler()
+        ]
+    )
     
-    # Start monitoring
+    logger = logging.getLogger(__name__)
+    logger.info("Starting CNCera Enhanced Application")
+    
+    # Log system information
+    logger.info(f"Python version: {sys.version}")
+    logger.info(f"Flask version: {flask.__version__}")
+    logger.info(f"Working directory: {os.getcwd()}")
+    logger.info(f"Models directory: {MODELS}")
+    logger.info(f"Static directory: {STATIC}")
+    logger.info(f"Temp directory: {TEMP}")
+    
+    # Check FreeCAD availability
     try:
-        import threading
-        def start_monitoring():
-            metrics_collector.collect_system_metrics()
-            threading.Timer(30.0, start_monitoring).start()
-        start_monitoring()
-        logger.info("System monitoring started")
-    except Exception as e:
-        logger.warning(f"Failed to start monitoring: {e}")
+        result = subprocess.run(["FreeCADCmd", "--version"], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            logger.info("FreeCAD is available")
+        else:
+            logger.warning("FreeCAD may not be properly installed")
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        logger.warning("FreeCAD not found - STEP file conversion will not work")
     
-    app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)
+    # Start metrics collection in background
+    def collect_metrics_background():
+        while True:
+            try:
+                metrics_collector.collect_system_metrics()
+                time.sleep(30)  # Collect every 30 seconds
+            except Exception as e:
+                logger.error(f"Error collecting metrics: {e}")
+                time.sleep(60)  # Wait longer on error
+    
+    metrics_thread = threading.Thread(target=collect_metrics_background, daemon=True)
+    metrics_thread.start()
+    
+    # Start the application
+    try:
+        app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    except KeyboardInterrupt:
+        logger.info("Application stopped by user")
+    except Exception as e:
+        error = error_handler.handle_exception(e, "Application startup")
+        logger.error(f"Failed to start application: {error.user_message}")
+        sys.exit(1)
