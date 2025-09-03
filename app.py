@@ -29,6 +29,14 @@ from datetime import datetime
 from typing import Dict, Any, Optional, Tuple, List
 from string import Template
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ Environment variables loaded from .env file")
+except ImportError:
+    print("⚠️ python-dotenv not installed, using system environment variables only")
+
 import flask
 from flask import Flask, request, jsonify, send_file, send_from_directory, render_template_string
 from werkzeug.utils import secure_filename
