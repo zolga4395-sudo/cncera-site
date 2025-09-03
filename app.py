@@ -708,6 +708,7 @@ def process_uploaded_file(file, units: str, linear_deflection: float, angular_de
         linear_deflection = validate_float(request.form.get("linear_deflection", 0.1), 0.1, 0.01, 10.0)
         angular_deflection_deg = validate_float(request.form.get("angular_deflection_deg", 15), 15.0, 0.01, 89.0)
         relative = request.form.get("relative", "false").lower() in ("1", "true", "yes", "on")
+        work_offset = request.form.get("work_offset", "G54")
 
         ext = disk_path.suffix.lower()
         res = {}
@@ -738,6 +739,7 @@ def process_uploaded_file(file, units: str, linear_deflection: float, angular_de
 
         res["model_path"] = f"/models/{stl_name}"
         res["mesh_info"] = analyze_stl(stl_abs)
+        res["work_offset"] = work_offset
         result_name = f"result_{hashlib.md5(str(disk_path).encode()).hexdigest()}.json"
         (TEMP / result_name).write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
         res["result_filename"] = result_name
@@ -1315,32 +1317,47 @@ def generate_ai_chat_response(message: str, provider: str, analysis_data: Dict) 
         
         # Подготавливаем контекст с данными анализа
         context = ""
-        if analysis_data and analysis_data.get("geometry_analysis"):
-            geometry = analysis_data["geometry_analysis"]
-            elements = geometry.get("elements", [{}])
-            summary = geometry.get("summary", {})
-            
-            # Безопасное извлечение данных
-            dimensions = elements[0].get("dimensions", {}) if elements else {}
-            material = summary.get("primary_material", "Не определен")
-            holes = summary.get("total_holes", 0)
-            pockets = summary.get("total_pockets", 0)
-            chamfers = summary.get("total_chamfers", 0)
-            volume = dimensions.get("volume", 0)
-            surface_area = dimensions.get("surface_area", 0)
-            length = dimensions.get("length", 0)
-            width = dimensions.get("width", 0)
-            height = dimensions.get("height", 0)
-            
-            context = f"""
+        if analysis_data:
+            # Извлекаем данные из разных возможных структур
+            geometry_analysis = analysis_data.get("geometry_analysis", {})
+            if geometry_analysis:
+                elements = geometry_analysis.get("elements", [{}])
+                summary = geometry_analysis.get("summary", {})
+                
+                # Безопасное извлечение данных
+                dimensions = elements[0].get("dimensions", {}) if elements else {}
+                material = summary.get("primary_material", "Не определен")
+                holes = summary.get("total_holes", 0)
+                pockets = summary.get("total_pockets", 0)
+                chamfers = summary.get("total_chamfers", 0)
+                threads = summary.get("total_threads", 0)
+                bosses = summary.get("total_bosses", 0)
+                volume = dimensions.get("volume", 0)
+                surface_area = dimensions.get("surface_area", 0)
+                length = dimensions.get("length", 0)
+                width = dimensions.get("width", 0)
+                height = dimensions.get("height", 0)
+                
+                context = f"""
 КОНТЕКСТ АНАЛИЗА ДЕТАЛИ:
 - Размеры: {length} x {width} x {height} мм
 - Материал: {material}
 - Отверстия: {holes}
 - Карманы: {pockets}
 - Фаски: {chamfers}
+- Резьбы: {threads}
+- Бобышки: {bosses}
 - Объем: {volume} мм³
 - Площадь поверхности: {surface_area} мм²
+
+"""
+            else:
+                # Fallback для старых данных
+                context = f"""
+КОНТЕКСТ АНАЛИЗА ДЕТАЛИ:
+- Файл загружен и проанализирован
+- Данные анализа доступны в системе
+- Требуется анализ для рекомендаций по обработке
 
 """
         
@@ -1688,6 +1705,10 @@ def generate_enhanced_milling_gcode(stl_path: Path, out_path: Path, **params) ->
             for cmd in controller_settings["header"]:
                 w(f"{cmd}\n")
             
+            # Set work offset
+            work_offset = params.get("work_offset", "G54")
+            w(f"{work_offset}\n")
+            
             if validated_params.get("spindle"):
                 w(f"{controller_settings['spindle_on'].format(spindle=validated_params['spindle'])}\n")
             w(f"{controller_settings['coolant_on']}\n")
@@ -1959,6 +1980,17 @@ INDEX_HTML = """
                     <label class="block text-sm text-gray-400 mb-1">Relative</label>
                     <input id="rel" type="checkbox" class="h-5 w-5 text-blue-600 bg-gray-700 border-gray-600 rounded">
                 </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Начало координат</label>
+                    <select id="work_offset" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        <option value="G54">G54</option>
+                        <option value="G55">G55</option>
+                        <option value="G56">G56</option>
+                        <option value="G57">G57</option>
+                        <option value="G58">G58</option>
+                        <option value="G59">G59</option>
+                    </select>
+                </div>
             </div>
             <button onclick="analyze()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">Анализировать</button>
             <div id="log" class="mt-4 text-gray-400"></div>
@@ -2188,6 +2220,7 @@ INDEX_HTML = """
             fd.append('linear_deflection', document.getElementById('linDef').value || '0.1');
             fd.append('angular_deflection_deg', document.getElementById('angDef').value || '15');
             fd.append('relative', document.getElementById('rel').checked ? 'true' : 'false');
+            fd.append('work_offset', document.getElementById('work_offset').value || 'G54');
 
             try {
                 const r = await fetch('/upload', { method: 'POST', body: fd });
@@ -2589,7 +2622,7 @@ INDEX_HTML = """
             const provider = document.getElementById('ai_provider').value;
             
             // Получаем данные анализа геометрии из предыдущего результата
-            if (!window.lastAnalysisData || !window.lastAnalysisData.geometry_analysis) {
+            if (!window.lastAnalysisData) {
                 camResults.innerHTML = '<div class="text-red-400">Сначала загрузите и проанализируйте файл</div>';
                 return;
             }
@@ -2601,7 +2634,7 @@ INDEX_HTML = """
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        geometry_analysis: window.lastAnalysisData.geometry_analysis,
+                        geometry_analysis: window.lastAnalysisData.geometry_analysis || window.lastAnalysisData,
                         provider: provider
                     })
                 });
@@ -2747,8 +2780,8 @@ INDEX_HTML = """
 
         async function gen() {
             const glog = document.getElementById('glog');
-            if (!LAST_MODEL_PATH) {
-                glog.textContent = 'Сначала загрузите модель.';
+            if (!window.lastAnalysisData || !window.lastAnalysisData.model_path) {
+                glog.textContent = 'Сначала загрузите и проанализируйте модель.';
                 return;
             }
 
@@ -2756,7 +2789,7 @@ INDEX_HTML = """
             const controller = document.getElementById('controller').value;
 
             const payload = {
-                model_path: LAST_MODEL_PATH,
+                model_path: window.lastAnalysisData.model_path,
                 controller: controller,
                 operation_type: operationType,
                 material_grade: document.getElementById('material_grade').value,
@@ -2770,7 +2803,8 @@ INDEX_HTML = """
                 origin: document.getElementById('origin').value || 'bbox_min',
                 allowance_x: parseFloat(document.getElementById('allowance_x').value || '0'),
                 allowance_y: parseFloat(document.getElementById('allowance_y').value || '0'),
-                allowance_z: parseFloat(document.getElementById('allowance_z').value || '0')
+                allowance_z: parseFloat(document.getElementById('allowance_z').value || '0'),
+                work_offset: window.lastAnalysisData.work_offset || 'G54'
             };
 
             if (operationType === 'milling' || operationType === 'roughing' || operationType === 'finishing' || operationType === 'chamfer') {
@@ -2986,12 +3020,17 @@ def generate_gcode():
         if not model_path:
             raise CNCeraError(ErrorType.VALIDATION_ERROR, "No model path", "Путь к модели не указан")
         
-        if not SecurityValidator.validate_filename(Path(model_path).name):
+        # Преобразуем относительный путь в абсолютный
+        if model_path.startswith("/models/"):
+            model_file = MODELS / model_path.replace("/models/", "")
+        else:
+            model_file = Path(model_path)
+        
+        if not SecurityValidator.validate_filename(model_file.name):
             raise CNCeraError(ErrorType.SECURITY_ERROR, "Invalid model path", "Недопустимый путь к модели")
         
-        model_file = Path(model_path)
         if not model_file.exists():
-            raise CNCeraError(ErrorType.FILE_ERROR, "Model file not found", "Файл модели не найден")
+            raise CNCeraError(ErrorType.FILE_ERROR, f"Model file not found: {model_file}", f"Файл модели не найден: {model_file}")
         
         validated_params = SecurityValidator.validate_gcode_params(data)
         operation_type = validated_params.get("operation_type", "milling")
