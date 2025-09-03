@@ -1,0 +1,6 @@
+Flask==2.3.3
+Werkzeug==2.3.7
+requests==2.31.0
+numpy-stl==3.0.1
+matplotlib==3.7.2
+pathlib2==2.3.7
