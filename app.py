@@ -363,14 +363,26 @@ def process_uploaded_file(file, units: str, linear_deflection: float, angular_de
         
         file.save(str(temp_path))
         
-        # Convert STEP to STL if needed
+        # Convert STEP to STL if needed and perform detailed geometry analysis
+        geometry_analysis = None
         if filename.lower().endswith(('.step', '.stp')):
+            # Perform detailed geometry analysis first
+            try:
+                geometry_analysis = analyze_geometry_detailed(temp_path)
+            except Exception as e:
+                logger.warning(f"Detailed geometry analysis failed: {e}")
+                geometry_analysis = None
+            
             stl_path = convert_step_to_stl(temp_path, linear_deflection, angular_deflection_deg)
         else:
             stl_path = temp_path
         
         # Analyze STL (simplified without numpy)
         result = analyze_stl_file_simple(stl_path, units, relative)
+        
+        # Add geometry analysis to result
+        if geometry_analysis:
+            result["geometry_analysis"] = geometry_analysis.get("geometry_analysis", {})
         
         # Generate preview (simplified)
         preview_png_data = None
@@ -411,6 +423,239 @@ def process_uploaded_file(file, units: str, linear_deflection: float, angular_de
         if 'stl_path' in locals() and stl_path.exists() and stl_path != temp_path:
             stl_path.unlink()
         raise
+
+def analyze_geometry_detailed(step_path: Path) -> Dict:
+    """Детальный анализ геометрии через FreeCAD для распознавания элементов"""
+    try:
+        freecad_cmd = get_freecad_cmd()
+        if not freecad_cmd:
+            raise CNCeraError(ErrorType.CONFIGURATION_ERROR, "FreeCAD not found", "FreeCAD не найден")
+
+        sys_tmp = Path(tempfile.gettempdir())
+        tmp_py = sys_tmp / f"geometry_analysis_{hashlib.md5(str(step_path).encode()).hexdigest()}.py"
+        out_json = sys_tmp / f"geometry_analysis_{hashlib.md5((str(step_path) + '_analysis').encode()).hexdigest()}.json"
+
+        sp = str(step_path).replace("\\", "/")
+        jp = str(out_json).replace("\\", "/")
+
+        fc_script_content = f"""
+import os, sys, json, traceback, math
+import FreeCAD as App
+import Part, Mesh, MeshPart
+import Draft
+
+step_path = r"{sp}"
+json_path = r"{jp}"
+
+def write_json(obj):
+    try:
+        with open(json_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(obj, ensure_ascii=False, indent=2))
+    except Exception as ee:
+        print("WRITE_JSON_FAIL", ee)
+
+def analyze_geometry(shape):
+    '''Анализ геометрии для распознавания элементов'''
+    elements = {{
+        "holes": [],
+        "pockets": [],
+        "chamfers": [],
+        "threads": [],
+        "bosses": [],
+        "protrusions": [],
+        "material": "Unknown",
+        "dimensions": {{}},
+        "features": []
+    }}
+    
+    try:
+        # Анализ размеров
+        bbox = shape.BoundBox
+        elements["dimensions"] = {{
+            "length": round(bbox.XLength, 3),
+            "width": round(bbox.YLength, 3),
+            "height": round(bbox.ZLength, 3),
+            "volume": round(shape.Volume, 3),
+            "surface_area": round(shape.Area, 3)
+        }}
+        
+        # Поиск отверстий (цилиндрические полости)
+        faces = shape.Faces
+        for i, face in enumerate(faces):
+            try:
+                if hasattr(face, 'Surface') and hasattr(face.Surface, 'TypeId'):
+                    if 'Cylinder' in face.Surface.TypeId:
+                        # Проверяем, является ли это отверстием
+                        center = face.Surface.Center
+                        axis = face.Surface.Axis
+                        radius = face.Surface.Radius
+                        
+                        # Простая эвристика для определения отверстий
+                        if radius < min(bbox.XLength, bbox.YLength) * 0.3:
+                            elements["holes"].append({{
+                                "type": "cylindrical_hole",
+                                "center": [round(center.x, 3), round(center.y, 3), round(center.z, 3)],
+                                "axis": [round(axis.x, 3), round(axis.y, 3), round(axis.z, 3)],
+                                "radius": round(radius, 3),
+                                "depth": round(bbox.ZLength * 0.8, 3)  # Примерная глубина
+                            }})
+            except Exception as e:
+                continue
+        
+        # Поиск карманов (прямоугольные углубления)
+        edges = shape.Edges
+        for edge in edges:
+            try:
+                if hasattr(edge, 'Curve') and hasattr(edge.Curve, 'TypeId'):
+                    if 'Line' in edge.Curve.TypeId:
+                        # Анализ прямых ребер для поиска карманов
+                        length = edge.Length
+                        if length > min(bbox.XLength, bbox.YLength) * 0.1:
+                            start = edge.firstVertex().Point
+                            end = edge.lastVertex().Point
+                            elements["pockets"].append({{
+                                "type": "rectangular_pocket",
+                                "start": [round(start.x, 3), round(start.y, 3), round(start.z, 3)],
+                                "end": [round(end.x, 3), round(end.y, 3), round(end.z, 3)],
+                                "length": round(length, 3)
+                            }})
+            except Exception as e:
+                continue
+        
+        # Поиск фасок (наклонные поверхности)
+        for face in faces:
+            try:
+                if hasattr(face, 'Surface') and hasattr(face.Surface, 'TypeId'):
+                    if 'Plane' in face.Surface.TypeId:
+                        normal = face.Surface.Axis
+                        # Проверяем угол наклона
+                        angle = math.degrees(math.acos(abs(normal.z)))
+                        if 5 < angle < 85:  # Наклонная поверхность
+                            elements["chamfers"].append({{
+                                "type": "chamfer",
+                                "normal": [round(normal.x, 3), round(normal.y, 3), round(normal.z, 3)],
+                                "angle": round(angle, 1)
+                            }})
+            except Exception as e:
+                continue
+        
+        # Определение материала по размерам и сложности
+        complexity = len(faces) + len(edges) + len(shape.Vertexes)
+        if elements["dimensions"]["volume"] > 1000000:  # Большая деталь
+            elements["material"] = "Steel (42CrMo4)"
+        elif complexity > 100:
+            elements["material"] = "Aluminum (Al6061)"
+        else:
+            elements["material"] = "Stainless Steel (316L)"
+        
+        # Общие характеристики
+        elements["features"] = [
+            f"Total faces: {{len(faces)}}",
+            f"Total edges: {{len(edges)}}",
+            f"Total vertices: {{len(shape.Vertexes)}}",
+            f"Complexity score: {{complexity}}"
+        ]
+        
+    except Exception as e:
+        elements["error"] = str(e)
+    
+    return elements
+
+try:
+    doc = App.newDocument("geometry_analysis")
+    import Import
+    Import.insert(step_path, "geometry_analysis")
+    
+    objects = doc.Objects
+    if not objects:
+        raise Exception("No objects found in the STEP file")
+    
+    shape_objects = [obj for obj in objects if hasattr(obj, 'Shape') and obj.Shape is not None]
+    if not shape_objects:
+        raise Exception("No valid Shape objects found in the STEP file")
+    
+    # Анализируем все объекты
+    all_elements = []
+    for obj in shape_objects:
+        elements = analyze_geometry(obj.Shape)
+        elements["object_name"] = obj.Name
+        all_elements.append(elements)
+    
+    # Объединяем результаты
+    combined_elements = {{
+        "success": True,
+        "file_info": {{
+            "filename": os.path.basename(step_path),
+            "file_type": ".step",
+            "file_size": os.path.getsize(step_path)
+        }},
+        "geometry_analysis": {{
+            "total_objects": len(shape_objects),
+            "elements": all_elements,
+            "summary": {{
+                "total_holes": sum(len(elem.get("holes", [])) for elem in all_elements),
+                "total_pockets": sum(len(elem.get("pockets", [])) for elem in all_elements),
+                "total_chamfers": sum(len(elem.get("chamfers", [])) for elem in all_elements),
+                "primary_material": all_elements[0].get("material", "Unknown") if all_elements else "Unknown"
+            }}
+        }}
+    }}
+    
+    write_json(combined_elements)
+    print("GEOMETRY_ANALYSIS_OK")
+    
+except Exception as e:
+    error_info = {{
+        "success": False, 
+        "error": str(e), 
+        "traceback": traceback.format_exc()
+    }}
+    write_json(error_info)
+    print("GEOMETRY_ANALYSIS_ERROR:", e)
+    traceback.print_exc()
+"""
+
+        tmp_py.write_text(fc_script_content, encoding="utf-8")
+        creationflags = 0x08000000 if os.name == "nt" else 0
+        env = os.environ.copy()
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
+
+        try:
+            p = subprocess.run(
+                [freecad_cmd, str(tmp_py)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=300,
+                creationflags=creationflags,
+                env=env
+            )
+        except subprocess.TimeoutExpired:
+            raise CNCeraError(ErrorType.PROCESSING_ERROR, "FreeCAD geometry analysis timed out", "Таймаут анализа геометрии FreeCAD")
+
+        if not out_json.exists():
+            err_txt = p.stderr.decode("utf-8", errors="ignore")[-300:] if p.stderr else ""
+            out_txt = p.stdout.decode("utf-8", errors="ignore")[-300:] if p.stdout else ""
+            raise CNCeraError(ErrorType.PROCESSING_ERROR, f"FreeCAD geometry analysis failed: {out_txt} | {err_txt}", "Ошибка анализа геометрии FreeCAD")
+
+        try:
+            data = json.loads(out_json.read_text(encoding="utf-8"))
+        except Exception as e:
+            raise CNCeraError(ErrorType.PROCESSING_ERROR, f"Invalid JSON from FreeCAD: {e}", "Некорректный JSON от FreeCAD")
+        finally:
+            for path in (tmp_py, out_json):
+                try:
+                    path.unlink()
+                except Exception:
+                    pass
+
+        if not data.get("success", False):
+            raise CNCeraError(ErrorType.PROCESSING_ERROR, f"FreeCAD geometry analysis failed: {data.get('error', 'unknown error')}", "Ошибка анализа геометрии FreeCAD")
+
+        return data
+        
+    except Exception as e:
+        raise CNCeraError(ErrorType.PROCESSING_ERROR, f"Geometry analysis error: {str(e)}", "Ошибка анализа геометрии")
 
 def convert_step_to_stl(step_path: Path, linear_deflection: float, angular_deflection_deg: float) -> Path:
     """Convert STEP file to STL using FreeCAD"""
@@ -623,6 +868,236 @@ def generate_ai_response(message: str, provider: str, api_key: str) -> str:
         raise CNCeraError(ErrorType.EXTERNAL_API_ERROR, f"API request failed: {str(e)}", "Ошибка запроса API")
     except Exception as e:
         raise CNCeraError(ErrorType.EXTERNAL_API_ERROR, f"AI response generation failed: {str(e)}", "Ошибка генерации ответа ИИ")
+
+def generate_cam_recommendations(geometry_analysis: Dict, provider: str = "openai") -> Dict:
+    """Генерация рекомендаций CAM через ИИ на основе анализа геометрии"""
+    try:
+        # Подготавливаем структурированные данные для ИИ
+        analysis_summary = {
+            "geometry": geometry_analysis.get("geometry_analysis", {}),
+            "material": geometry_analysis.get("geometry_analysis", {}).get("summary", {}).get("primary_material", "Unknown"),
+            "dimensions": geometry_analysis.get("geometry_analysis", {}).get("elements", [{}])[0].get("dimensions", {}),
+            "features": {
+                "holes": geometry_analysis.get("geometry_analysis", {}).get("summary", {}).get("total_holes", 0),
+                "pockets": geometry_analysis.get("geometry_analysis", {}).get("summary", {}).get("total_pockets", 0),
+                "chamfers": geometry_analysis.get("geometry_analysis", {}).get("summary", {}).get("total_chamfers", 0)
+            }
+        }
+        
+        # Формируем запрос к ИИ
+        prompt = f"""
+Проанализируй следующую 3D-модель и предоставь рекомендации для CAM-обработки:
+
+ГЕОМЕТРИЯ:
+- Материал: {analysis_summary['material']}
+- Размеры: {analysis_summary['dimensions'].get('length', 0)} x {analysis_summary['dimensions'].get('width', 0)} x {analysis_summary['dimensions'].get('height', 0)} мм
+- Объем: {analysis_summary['dimensions'].get('volume', 0)} мм³
+- Площадь поверхности: {analysis_summary['dimensions'].get('surface_area', 0)} мм²
+
+ОБНАРУЖЕННЫЕ ЭЛЕМЕНТЫ:
+- Отверстия: {analysis_summary['features']['holes']}
+- Карманы: {analysis_summary['features']['pockets']}
+- Фаски: {analysis_summary['features']['chamfers']}
+
+ТРЕБУЕТСЯ:
+1. Подобрать инструменты и патроны (BT, HSK и др.)
+2. Рассчитать режимы резания (Vc, n, fz, F, ap, ae) по материалу
+3. Составить план операций (черновая → получистовая → чистовая)
+4. Предложить G-код для контроллеров (Fanuc, Siemens, Heidenhain, Mazak, Haas, Okuma, Mitsubishi)
+
+Ответ предоставь в JSON формате:
+{{
+    "tools": [
+        {{"type": "end_mill", "diameter": 6, "flutes": 2, "material": "HSS", "holder": "BT40"}},
+        {{"type": "drill", "diameter": 3, "material": "HSS", "holder": "BT40"}}
+    ],
+    "cutting_parameters": {{
+        "roughing": {{"Vc": 120, "n": 6366, "fz": 0.1, "F": 1273, "ap": 2, "ae": 1.2}},
+        "finishing": {{"Vc": 150, "n": 7958, "fz": 0.05, "F": 796, "ap": 0.5, "ae": 0.3}}
+    }},
+    "operations": [
+        {{"step": 1, "type": "roughing", "tool": "end_mill_6mm", "description": "Черновая обработка"}},
+        {{"step": 2, "type": "drilling", "tool": "drill_3mm", "description": "Сверление отверстий"}},
+        {{"step": 3, "type": "finishing", "tool": "end_mill_6mm", "description": "Чистовая обработка"}}
+    ],
+    "gcode_recommendations": {{
+        "fanuc": "G90 G17 G21 G54\\nM3 S6366\\nG0 Z5\\n...",
+        "siemens": "G90 G17 G71 G54\\nM3 S6366\\nG0 Z5\\n..."
+    }}
+}}
+"""
+
+        # Получаем API ключ
+        api_key = None
+        if provider == "openai":
+            api_key = os.getenv("OPENAI_API_KEY")
+        elif provider == "anthropic":
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+        elif provider == "xai":
+            api_key = os.getenv("XAI_API_KEY")
+        
+        if not api_key:
+            # Возвращаем базовые рекомендации без ИИ
+            return generate_basic_cam_recommendations(analysis_summary)
+        
+        # Вызываем ИИ
+        ai_response = generate_ai_response(prompt, provider, api_key)
+        
+        # Пытаемся распарсить JSON ответ
+        try:
+            # Ищем JSON в ответе
+            import re
+            json_match = re.search(r'\{.*\}', ai_response, re.DOTALL)
+            if json_match:
+                cam_data = json.loads(json_match.group())
+                return {
+                    "success": True,
+                    "ai_provider": provider,
+                    "recommendations": cam_data,
+                    "raw_response": ai_response
+                }
+            else:
+                # Если JSON не найден, возвращаем базовые рекомендации
+                return generate_basic_cam_recommendations(analysis_summary)
+        except json.JSONDecodeError:
+            return generate_basic_cam_recommendations(analysis_summary)
+            
+    except Exception as e:
+        # В случае ошибки возвращаем базовые рекомендации
+        return generate_basic_cam_recommendations(analysis_summary)
+
+def generate_basic_cam_recommendations(analysis_summary: Dict) -> Dict:
+    """Генерация базовых рекомендаций CAM без ИИ"""
+    material = analysis_summary.get("material", "Steel (42CrMo4)")
+    dimensions = analysis_summary.get("dimensions", {})
+    features = analysis_summary.get("features", {})
+    
+    # Базовые рекомендации по материалу
+    if "Steel" in material or "42CrMo4" in material:
+        vc_rough, vc_finish = 120, 150
+        material_factor = 1.0
+    elif "Aluminum" in material or "Al6061" in material:
+        vc_rough, vc_finish = 300, 400
+        material_factor = 2.5
+    elif "Stainless" in material or "316L" in material:
+        vc_rough, vc_finish = 80, 100
+        material_factor = 0.7
+    else:
+        vc_rough, vc_finish = 120, 150
+        material_factor = 1.0
+    
+    # Рекомендуемые инструменты
+    tools = [
+        {
+            "type": "end_mill",
+            "diameter": 6,
+            "flutes": 2,
+            "material": "HSS",
+            "holder": "BT40",
+            "description": "Фреза концевая для черновой обработки"
+        },
+        {
+            "type": "end_mill",
+            "diameter": 3,
+            "flutes": 4,
+            "material": "Carbide",
+            "holder": "BT40",
+            "description": "Фреза концевая для чистовой обработки"
+        }
+    ]
+    
+    # Добавляем сверла если есть отверстия
+    if features.get("holes", 0) > 0:
+        tools.append({
+            "type": "drill",
+            "diameter": 3,
+            "material": "HSS",
+            "holder": "BT40",
+            "description": "Сверло для отверстий"
+        })
+    
+    # Параметры резания
+    tool_diam = 6
+    cutting_parameters = {
+        "roughing": {
+            "Vc": vc_rough,
+            "n": int((vc_rough * 1000) / (math.pi * tool_diam)),
+            "fz": 0.1 * material_factor,
+            "F": int((vc_rough * 1000) / (math.pi * tool_diam) * 2 * 0.1 * material_factor),
+            "ap": 2,
+            "ae": 1.2
+        },
+        "finishing": {
+            "Vc": vc_finish,
+            "n": int((vc_finish * 1000) / (math.pi * tool_diam)),
+            "fz": 0.05 * material_factor,
+            "F": int((vc_finish * 1000) / (math.pi * tool_diam) * 2 * 0.05 * material_factor),
+            "ap": 0.5,
+            "ae": 0.3
+        }
+    }
+    
+    # План операций
+    operations = [
+        {
+            "step": 1,
+            "type": "roughing",
+            "tool": "end_mill_6mm",
+            "description": "Черновая обработка контура",
+            "estimated_time": "15 мин"
+        }
+    ]
+    
+    if features.get("holes", 0) > 0:
+        operations.append({
+            "step": 2,
+            "type": "drilling",
+            "tool": "drill_3mm",
+            "description": "Сверление отверстий",
+            "estimated_time": "5 мин"
+        })
+    
+    operations.append({
+        "step": len(operations) + 1,
+        "type": "finishing",
+        "tool": "end_mill_3mm",
+        "description": "Чистовая обработка",
+        "estimated_time": "10 мин"
+    })
+    
+    # Базовый G-код
+    gcode_recommendations = {
+        "fanuc": f"""G90 G17 G21 G54
+M3 S{cutting_parameters['roughing']['n']}
+G0 Z5
+G0 X0 Y0
+G1 Z-2 F{cutting_parameters['roughing']['F']}
+G1 X{dimensions.get('length', 100)} Y{dimensions.get('width', 100)}
+G0 Z5
+M5
+M30""",
+        "siemens": f"""G90 G17 G71 G54
+M3 S{cutting_parameters['roughing']['n']}
+G0 Z5
+G0 X0 Y0
+G1 Z-2 F{cutting_parameters['roughing']['F']}
+G1 X{dimensions.get('length', 100)} Y{dimensions.get('width', 100)}
+G0 Z5
+M5
+M2"""
+    }
+    
+    return {
+        "success": True,
+        "ai_provider": "basic",
+        "recommendations": {
+            "tools": tools,
+            "cutting_parameters": cutting_parameters,
+            "operations": operations,
+            "gcode_recommendations": gcode_recommendations
+        },
+        "raw_response": "Базовые рекомендации без ИИ"
+    }
 
 def generate_enhanced_milling_gcode(stl_path: Path, out_path: Path, **params) -> Dict:
     """Enhanced milling G-code generation with cutting parameters calculation"""
@@ -924,6 +1399,27 @@ INDEX_HTML = """
                 <div class="text-gray-400 p-8">Загрузите файл для предпросмотра</div>
             </div>
             <div id="meta" class="mt-4"></div>
+            
+            <!-- Detailed Geometry Analysis -->
+            <div id="geometry_analysis" class="mt-6" style="display: none;">
+                <h3 class="text-lg font-medium mb-3">Детальный анализ геометрии</h3>
+                <div id="geometry_details" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+            </div>
+            
+            <!-- CAM Recommendations -->
+            <div id="cam_recommendations" class="mt-6" style="display: none;">
+                <h3 class="text-lg font-medium mb-3">CAM рекомендации</h3>
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-400 mb-1">ИИ провайдер</label>
+                    <select id="ai_provider" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        <option value="openai">OpenAI (GPT)</option>
+                        <option value="anthropic">Anthropic (Claude)</option>
+                        <option value="xai">xAI (Grok)</option>
+                    </select>
+                </div>
+                <button onclick="getCamRecommendations()" class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition mb-4">Получить CAM рекомендации</button>
+                <div id="cam_results"></div>
+            </div>
         </div>
 
         <!-- G-code Generation Section -->
@@ -1148,9 +1644,227 @@ INDEX_HTML = """
                     push('Грани', data.mesh_info.faces);
                 }
                 meta.innerHTML = `<table class="w-full border-collapse"><thead><tr class="bg-gray-700"><th class="py-2 px-4 text-left">Параметр</th><th class="py-2 px-4 text-left">Значение</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+                
+                // Сохраняем данные анализа для CAM рекомендаций
+                window.lastAnalysisData = data;
+                
+                // Показываем детальный анализ геометрии если доступен
+                if (data.geometry_analysis) {
+                    displayGeometryAnalysis(data.geometry_analysis);
+                }
             } catch (err) {
                 log.textContent = 'Сетевая ошибка: ' + err;
             }
+        }
+
+        function displayGeometryAnalysis(geometryAnalysis) {
+            const geometryDiv = document.getElementById('geometry_analysis');
+            const detailsDiv = document.getElementById('geometry_details');
+            
+            if (!geometryAnalysis || !geometryAnalysis.summary) {
+                return;
+            }
+            
+            const summary = geometryAnalysis.summary;
+            const elements = geometryAnalysis.elements || [];
+            
+            let html = `
+                <div class="bg-gray-700 p-4 rounded-lg">
+                    <h4 class="font-medium text-blue-400 mb-2">Обнаруженные элементы</h4>
+                    <div class="space-y-1 text-sm">
+                        <div>Отверстия: <span class="text-yellow-400">${summary.total_holes || 0}</span></div>
+                        <div>Карманы: <span class="text-yellow-400">${summary.total_pockets || 0}</span></div>
+                        <div>Фаски: <span class="text-yellow-400">${summary.total_chamfers || 0}</span></div>
+                        <div>Материал: <span class="text-green-400">${summary.primary_material || 'Не определен'}</span></div>
+                    </div>
+                </div>
+            `;
+            
+            if (elements.length > 0) {
+                const firstElement = elements[0];
+                if (firstElement.dimensions) {
+                    const dims = firstElement.dimensions;
+                    html += `
+                        <div class="bg-gray-700 p-4 rounded-lg">
+                            <h4 class="font-medium text-blue-400 mb-2">Размеры</h4>
+                            <div class="space-y-1 text-sm">
+                                <div>Длина: <span class="text-yellow-400">${dims.length || 0} мм</span></div>
+                                <div>Ширина: <span class="text-yellow-400">${dims.width || 0} мм</span></div>
+                                <div>Высота: <span class="text-yellow-400">${dims.height || 0} мм</span></div>
+                                <div>Объем: <span class="text-yellow-400">${dims.volume || 0} мм³</span></div>
+                                <div>Площадь: <span class="text-yellow-400">${dims.surface_area || 0} мм²</span></div>
+                            </div>
+                        </div>
+                    `;
+                }
+            }
+            
+            detailsDiv.innerHTML = html;
+            geometryDiv.style.display = 'block';
+            
+            // Показываем секцию CAM рекомендаций
+            document.getElementById('cam_recommendations').style.display = 'block';
+        }
+
+        async function getCamRecommendations() {
+            const camResults = document.getElementById('cam_results');
+            const provider = document.getElementById('ai_provider').value;
+            
+            // Получаем данные анализа геометрии из предыдущего результата
+            if (!window.lastAnalysisData || !window.lastAnalysisData.geometry_analysis) {
+                camResults.innerHTML = '<div class="text-red-400">Сначала загрузите и проанализируйте файл</div>';
+                return;
+            }
+            
+            camResults.innerHTML = '<div class="text-blue-400">Получение CAM рекомендаций...</div>';
+            
+            try {
+                const response = await fetch('/cam_analysis', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        geometry_analysis: window.lastAnalysisData.geometry_analysis,
+                        provider: provider
+                    })
+                });
+                
+                const data = await response.json();
+                if (!data.success) {
+                    camResults.innerHTML = `<div class="text-red-400">Ошибка: ${data.error}</div>`;
+                    return;
+                }
+                
+                displayCamRecommendations(data.cam_recommendations);
+                
+            } catch (err) {
+                camResults.innerHTML = `<div class="text-red-400">Сетевая ошибка: ${err}</div>`;
+            }
+        }
+
+        function displayCamRecommendations(camData) {
+            const camResults = document.getElementById('cam_results');
+            
+            if (!camData.success) {
+                camResults.innerHTML = '<div class="text-red-400">Ошибка получения рекомендаций</div>';
+                return;
+            }
+            
+            const rec = camData.recommendations;
+            const provider = camData.ai_provider;
+            
+            let html = `
+                <div class="bg-gray-700 p-4 rounded-lg mb-4">
+                    <h4 class="font-medium text-green-400 mb-2">Провайдер: ${provider.toUpperCase()}</h4>
+                </div>
+            `;
+            
+            // Инструменты
+            if (rec.tools && rec.tools.length > 0) {
+                html += `
+                    <div class="bg-gray-700 p-4 rounded-lg mb-4">
+                        <h4 class="font-medium text-blue-400 mb-3">Рекомендуемые инструменты</h4>
+                        <div class="space-y-2">
+                `;
+                rec.tools.forEach(tool => {
+                    html += `
+                        <div class="bg-gray-600 p-3 rounded">
+                            <div class="font-medium">${tool.type} Ø${tool.diameter}мм</div>
+                            <div class="text-sm text-gray-300">${tool.description || ''}</div>
+                            <div class="text-xs text-gray-400">Материал: ${tool.material}, Патрон: ${tool.holder}</div>
+                        </div>
+                    `;
+                });
+                html += '</div></div>';
+            }
+            
+            // Параметры резания
+            if (rec.cutting_parameters) {
+                html += `
+                    <div class="bg-gray-700 p-4 rounded-lg mb-4">
+                        <h4 class="font-medium text-blue-400 mb-3">Режимы резания</h4>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                `;
+                
+                if (rec.cutting_parameters.roughing) {
+                    const rough = rec.cutting_parameters.roughing;
+                    html += `
+                        <div class="bg-gray-600 p-3 rounded">
+                            <h5 class="font-medium text-yellow-400 mb-2">Черновая обработка</h5>
+                            <div class="text-sm space-y-1">
+                                <div>Vc: ${rough.Vc} м/мин</div>
+                                <div>n: ${rough.n} об/мин</div>
+                                <div>fz: ${rough.fz} мм/зуб</div>
+                                <div>F: ${rough.F} мм/мин</div>
+                                <div>ap: ${rough.ap} мм</div>
+                                <div>ae: ${rough.ae} мм</div>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                if (rec.cutting_parameters.finishing) {
+                    const finish = rec.cutting_parameters.finishing;
+                    html += `
+                        <div class="bg-gray-600 p-3 rounded">
+                            <h5 class="font-medium text-green-400 mb-2">Чистовая обработка</h5>
+                            <div class="text-sm space-y-1">
+                                <div>Vc: ${finish.Vc} м/мин</div>
+                                <div>n: ${finish.n} об/мин</div>
+                                <div>fz: ${finish.fz} мм/зуб</div>
+                                <div>F: ${finish.F} мм/мин</div>
+                                <div>ap: ${finish.ap} мм</div>
+                                <div>ae: ${finish.ae} мм</div>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                html += '</div></div>';
+            }
+            
+            // План операций
+            if (rec.operations && rec.operations.length > 0) {
+                html += `
+                    <div class="bg-gray-700 p-4 rounded-lg mb-4">
+                        <h4 class="font-medium text-blue-400 mb-3">План операций</h4>
+                        <div class="space-y-2">
+                `;
+                rec.operations.forEach(op => {
+                    html += `
+                        <div class="bg-gray-600 p-3 rounded flex justify-between items-center">
+                            <div>
+                                <div class="font-medium">Шаг ${op.step}: ${op.type}</div>
+                                <div class="text-sm text-gray-300">${op.description}</div>
+                                <div class="text-xs text-gray-400">Инструмент: ${op.tool}</div>
+                            </div>
+                            <div class="text-sm text-yellow-400">${op.estimated_time || ''}</div>
+                        </div>
+                    `;
+                });
+                html += '</div></div>';
+            }
+            
+            // G-код рекомендации
+            if (rec.gcode_recommendations) {
+                html += `
+                    <div class="bg-gray-700 p-4 rounded-lg">
+                        <h4 class="font-medium text-blue-400 mb-3">G-код рекомендации</h4>
+                        <div class="space-y-3">
+                `;
+                
+                Object.entries(rec.gcode_recommendations).forEach(([controller, gcode]) => {
+                    html += `
+                        <div class="bg-gray-600 p-3 rounded">
+                            <h5 class="font-medium text-yellow-400 mb-2">${controller.toUpperCase()}</h5>
+                            <pre class="text-xs text-gray-300 whitespace-pre-wrap">${gcode}</pre>
+                        </div>
+                    `;
+                });
+                
+                html += '</div></div>';
+            }
+            
+            camResults.innerHTML = html;
         }
 
         async function gen() {
@@ -1502,6 +2216,52 @@ def gcode_preview():
         
     except Exception as e:
         error = error_handler.handle_exception(e, "G-code preview")
+        return jsonify({"success": False, "error": error.user_message}), 500
+
+@app.route("/cam_analysis", methods=["POST"])
+def cam_analysis():
+    """Получить CAM рекомендации на основе анализа геометрии"""
+    start_time = time.time()
+    
+    try:
+        data = request.get_json()
+        if not data:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "No JSON data", "Данные не получены")
+        
+        geometry_analysis = data.get("geometry_analysis")
+        if not geometry_analysis:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "No geometry analysis data", "Данные анализа геометрии не предоставлены")
+        
+        provider = data.get("provider", "openai").lower()
+        if provider not in ["openai", "anthropic", "xai"]:
+            raise CNCeraError(ErrorType.VALIDATION_ERROR, "Invalid provider", "Недопустимый провайдер")
+        
+        # Генерируем CAM рекомендации
+        cam_recommendations = generate_cam_recommendations(geometry_analysis, provider)
+        
+        processing_time = time.time() - start_time
+        metrics_collector.record_processing(f"cam_analysis_{provider}", len(str(geometry_analysis)), processing_time, True)
+        
+        return jsonify({
+            "success": True,
+            "cam_recommendations": cam_recommendations,
+            "processing_time": processing_time
+        })
+        
+    except CNCeraError as e:
+        processing_time = time.time() - start_time
+        data_size = len(str(data)) if data else 0
+        
+        metrics_collector.record_processing(f"cam_analysis_{data.get('provider', 'unknown')}", data_size, processing_time, False, e.error_type.value)
+        return jsonify({"success": False, "error": e.user_message}), 400
+        
+    except Exception as e:
+        processing_time = time.time() - start_time
+        error = error_handler.handle_exception(e, "CAM analysis")
+        
+        data_size = len(str(data)) if data else 0
+        
+        metrics_collector.record_processing(f"cam_analysis_{data.get('provider', 'unknown')}", data_size, processing_time, False, error.error_type.value)
         return jsonify({"success": False, "error": error.user_message}), 500
 
 @app.route("/chat", methods=["POST"])
