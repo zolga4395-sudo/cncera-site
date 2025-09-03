@@ -1023,6 +1023,8 @@ try:
                 "total_holes": sum(len(elem.get("holes", [])) for elem in all_elements),
                 "total_pockets": sum(len(elem.get("pockets", [])) for elem in all_elements),
                 "total_chamfers": sum(len(elem.get("chamfers", [])) for elem in all_elements),
+                "total_threads": sum(len(elem.get("threads", [])) for elem in all_elements),
+                "total_bosses": sum(len(elem.get("bosses", [])) for elem in all_elements),
                 "primary_material": all_elements[0].get("material", "Unknown") if all_elements else "Unknown"
             }}
         }}
@@ -1315,15 +1317,30 @@ def generate_ai_chat_response(message: str, provider: str, analysis_data: Dict) 
         context = ""
         if analysis_data and analysis_data.get("geometry_analysis"):
             geometry = analysis_data["geometry_analysis"]
+            elements = geometry.get("elements", [{}])
+            summary = geometry.get("summary", {})
+            
+            # Безопасное извлечение данных
+            dimensions = elements[0].get("dimensions", {}) if elements else {}
+            material = summary.get("primary_material", "Не определен")
+            holes = summary.get("total_holes", 0)
+            pockets = summary.get("total_pockets", 0)
+            chamfers = summary.get("total_chamfers", 0)
+            volume = dimensions.get("volume", 0)
+            surface_area = dimensions.get("surface_area", 0)
+            length = dimensions.get("length", 0)
+            width = dimensions.get("width", 0)
+            height = dimensions.get("height", 0)
+            
             context = f"""
 КОНТЕКСТ АНАЛИЗА ДЕТАЛИ:
-- Размеры: {geometry.get('elements', [{}])[0].get('dimensions', {}).get('length', 0)} x {geometry.get('elements', [{}])[0].get('dimensions', {}).get('width', 0)} x {geometry.get('elements', [{}])[0].get('dimensions', {}).get('height', 0)} мм
-- Материал: {geometry.get('summary', {}).get('primary_material', 'Не определен')}
-- Отверстия: {geometry.get('summary', {}).get('total_holes', 0)}
-- Карманы: {geometry.get('summary', {}).get('total_pockets', 0)}
-- Фаски: {geometry.get('summary', {}).get('total_chamfers', 0)}
-- Объем: {geometry.get('elements', [{}])[0].get('dimensions', {}).get('volume', 0)} мм³
-- Площадь поверхности: {geometry.get('elements', [{}])[0].get('dimensions', {}).get('surface_area', 0)} мм²
+- Размеры: {length} x {width} x {height} мм
+- Материал: {material}
+- Отверстия: {holes}
+- Карманы: {pockets}
+- Фаски: {chamfers}
+- Объем: {volume} мм³
+- Площадь поверхности: {surface_area} мм²
 
 """
         
@@ -2232,6 +2249,13 @@ INDEX_HTML = """
                 // Показываем чат с ИИ
                 document.getElementById('ai_chat').style.display = 'block';
                 document.getElementById('cam_recommendations').style.display = 'block';
+                
+                // Автоматически запускаем анализ с ИИ
+                if (data.geometry_analysis) {
+                    setTimeout(() => {
+                        autoAnalyzeWithAI(data);
+                    }, 1000);
+                }
             } catch (err) {
                 log.textContent = 'Сетевая ошибка: ' + err;
             }
@@ -2323,8 +2347,8 @@ INDEX_HTML = """
         }
         
         function addZeroPointIndicator(geometry, scale) {
-            // Calculate bounding box
-            const box = new THREE.Box3().setFromBufferGeometry(geometry);
+            // Calculate bounding box from geometry
+            const box = new THREE.Box3().setFromObject(model);
             const size = box.getSize(new THREE.Vector3());
             const center = box.getCenter(new THREE.Vector3());
             
@@ -2336,14 +2360,14 @@ INDEX_HTML = """
             const zeroPointMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
             const zeroPoint = new THREE.Mesh(zeroPointGeometry, zeroPointMaterial);
             
-            zeroPoint.position.set(0, zeroPointY * scale, 0);
+            zeroPoint.position.set(0, zeroPointY, 0);
             zeroPoint.name = 'zeroPoint';
             
             scene.add(zeroPoint);
             
             // Add coordinate axes
             const axesHelper = new THREE.AxesHelper(20);
-            axesHelper.position.set(0, zeroPointY * scale, 0);
+            axesHelper.position.set(0, zeroPointY, 0);
             scene.add(axesHelper);
         }
         
@@ -2437,16 +2461,64 @@ INDEX_HTML = """
                 });
             }
         });
+        
+        // Автоматический анализ с ИИ
+        async function autoAnalyzeWithAI(analysisData) {
+            const messagesContainer = document.getElementById('chat-messages');
+            const provider = document.getElementById('chat_ai_provider').value;
+            
+            // Добавляем автоматический вопрос
+            const autoMessage = "Проанализируй эту деталь и дай рекомендации по обработке: какие инструменты использовать, режимы резания, последовательность операций и G-код.";
+            addChatMessage(autoMessage, 'user');
+            
+            // Добавляем индикатор загрузки
+            const loadingId = addChatMessage('Анализирую деталь с помощью ИИ...', 'ai', true);
+            
+            try {
+                const response = await fetch('/ai_chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: autoMessage,
+                        provider: provider,
+                        analysis_data: analysisData
+                    })
+                });
+                
+                const data = await response.json();
+                
+                // Удаляем индикатор загрузки
+                const loadingElement = document.getElementById(loadingId);
+                if (loadingElement) {
+                    loadingElement.remove();
+                }
+                
+                if (data.success) {
+                    addChatMessage(data.response, 'ai');
+                } else {
+                    addChatMessage('Ошибка ИИ анализа: ' + (data.error || 'Неизвестная ошибка'), 'ai');
+                }
+            } catch (error) {
+                // Удаляем индикатор загрузки
+                const loadingElement = document.getElementById(loadingId);
+                if (loadingElement) {
+                    loadingElement.remove();
+                }
+                addChatMessage('Ошибка сети при анализе ИИ: ' + error.message, 'ai');
+            }
+        }
 
         function displayGeometryAnalysis(geometryAnalysis) {
             const geometryDiv = document.getElementById('geometry_analysis');
             const detailsDiv = document.getElementById('geometry_details');
             
-            if (!geometryAnalysis || !geometryAnalysis.summary) {
+            if (!geometryAnalysis) {
                 return;
             }
             
-            const summary = geometryAnalysis.summary;
+            const summary = geometryAnalysis.summary || {};
             const elements = geometryAnalysis.elements || [];
             
             let html = `
@@ -2456,6 +2528,8 @@ INDEX_HTML = """
                         <div>Отверстия: <span class="text-yellow-400">${summary.total_holes || 0}</span></div>
                         <div>Карманы: <span class="text-yellow-400">${summary.total_pockets || 0}</span></div>
                         <div>Фаски: <span class="text-yellow-400">${summary.total_chamfers || 0}</span></div>
+                        <div>Резьбы: <span class="text-yellow-400">${summary.total_threads || 0}</span></div>
+                        <div>Бобышки: <span class="text-yellow-400">${summary.total_bosses || 0}</span></div>
                         <div>Материал: <span class="text-green-400">${summary.primary_material || 'Не определен'}</span></div>
                     </div>
                 </div>
@@ -2478,13 +2552,36 @@ INDEX_HTML = """
                         </div>
                     `;
                 }
+                
+                // Показываем детали отверстий
+                if (firstElement.holes && firstElement.holes.length > 0) {
+                    html += `
+                        <div class="bg-gray-700 p-4 rounded-lg">
+                            <h4 class="font-medium text-blue-400 mb-2">Отверстия</h4>
+                            <div class="space-y-1 text-sm">
+                    `;
+                    firstElement.holes.forEach((hole, index) => {
+                        html += `<div>Ø${hole.diameter || hole.radius * 2}мм ${hole.is_through ? '(сквозное)' : '(глухое)'}</div>`;
+                    });
+                    html += `</div></div>`;
+                }
+                
+                // Показываем допуски
+                if (firstElement.tolerances && firstElement.tolerances.length > 0) {
+                    html += `
+                        <div class="bg-gray-700 p-4 rounded-lg">
+                            <h4 class="font-medium text-blue-400 mb-2">Допуски</h4>
+                            <div class="space-y-1 text-sm">
+                    `;
+                    firstElement.tolerances.forEach(tolerance => {
+                        html += `<div class="text-orange-400">${tolerance}</div>`;
+                    });
+                    html += `</div></div>`;
+                }
             }
             
             detailsDiv.innerHTML = html;
             geometryDiv.style.display = 'block';
-            
-            // Показываем секцию CAM рекомендаций
-            document.getElementById('cam_recommendations').style.display = 'block';
         }
 
         async function getCamRecommendations() {
