@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CNCera Enhanced - Fixed Version</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+    <style>
+        #viewer { min-height: 400px; }
+        #nc-viewer { min-height: 300px; }
+        #log, #glog { white-space: pre-wrap; }
+        #chat-messages { max-height: 400px; overflow-y: auto; }
+        .chat-message { margin-bottom: 1rem; padding: 0.75rem; border-radius: 0.5rem; }
+        .user-message { background-color: #1e40af; margin-left: 2rem; }
+        .ai-message { background-color: #374151; margin-right: 2rem; }
+        .loading { opacity: 0.6; }
+        .nc-path { stroke: #3b82f6; stroke-width: 2; fill: none; }
+        .nc-rapid { stroke: #ef4444; stroke-width: 1; stroke-dasharray: 5,5; }
+        .nc-cycle { stroke: #10b981; stroke-width: 3; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans p-6">
+    <div class="max-w-6xl mx-auto space-y-6">
+        <!-- Header -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h1 class="text-2xl font-bold text-blue-400">CNCera Enhanced - Fixed Version</h1>
+            <p class="text-gray-400 mt-2">Advanced 3D Analysis & G-code Generation with RAG AI & NC Viewer</p>
+        </div>
+
+        <!-- File Upload Section -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-4">Загрузка и анализ файла</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Файл</label>
+                    <input id="file" type="file" accept=".step,.stp,.stl" class="block w-full text-sm text-gray-900 bg-gray-700 border border-gray-600 rounded-lg p-2 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:bg-blue-600 file:text-white hover:file:bg-blue-700">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Единицы</label>
+                    <select id="units" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        <option value="auto">Auto (mm)</option>
+                        <option value="mm">mm</option>
+                        <option value="inch">inch</option>
+                        <option value="m">m</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">LinearDeflection</label>
+                    <input id="linDef" type="number" step="0.01" value="0.1" min="0.01" max="10" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">AngularDeflection (°)</label>
+                    <input id="angDef" type="number" step="0.5" value="15" min="0.01" max="89" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Relative</label>
+                    <input id="rel" type="checkbox" class="h-5 w-5 text-blue-600 bg-gray-700 border-gray-600 rounded">
+                </div>
+            </div>
+            <button onclick="analyze()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">Анализировать</button>
+            <div id="log" class="mt-4 text-gray-400"></div>
+        </div>
+
+        <!-- Analysis Results Section -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-4">Результат анализа</h2>
+            <div id="viewer" class="bg-gray-900 rounded-lg flex items-center justify-center">
+                <div class="text-gray-400 p-8">Загрузите файл для предпросмотра</div>
+            </div>
+            <div id="meta" class="mt-4"></div>
+
+            <!-- Model Complexity Analysis -->
+            <div id="complexity_analysis" class="mt-6" style="display: none;">
+                <h3 class="text-lg font-medium mb-3">Анализ сложности модели</h3>
+                <div id="complexity_details" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+            </div>
+
+            <!-- AI Chat Section -->
+            <div id="ai_chat" class="mt-6" style="display: none;">
+                <h3 class="text-lg font-medium mb-3">Чат с ИИ для анализа детали</h3>
+                <div class="mb-4">
+                    <label class="block text-sm text-gray-400 mb-1">ИИ провайдер</label>
+                    <select id="chat_ai_provider" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        <option value="openai">OpenAI (GPT)</option>
+                        <option value="anthropic">Anthropic (Claude)</option>
+                        <option value="xai">xAI (Grok)</option>
+                    </select>
+                </div>
+                <div id="chat-messages" class="bg-gray-900 p-4 rounded-lg mb-4"></div>
+                <div class="flex gap-2">
+                    <input id="chat-input" type="text" placeholder="Задайте вопрос о детали..." class="flex-1 bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    <button onclick="sendChatMessage()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">Отправить</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- G-code Generation Section -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+            <h2 class="text-xl font-semibold mb-4">Генерация G-кода</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Контроллер</label>
+                    <select id="controller" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        <option value="fanuc">Fanuc</option>
+                        <option value="siemens">Siemens</option>
+                        <option value="heidenhain">Heidenhain</option>
+                        <option value="gsk">GSK</option>
+                        <option value="mazak">Mazak</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Тип обработки</label>
+                    <select id="operation_type" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        <option value="milling">Фрезерная</option>
+                        <option value="turning">Токарная</option>
+                        <option value="drilling">Сверление</option>
+                        <option value="chamfer">Фаска</option>
+                        <option value="roughing">Черновая обработка</option>
+                        <option value="finishing">Финишная обработка</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Ø инструмента, мм</label>
+                    <input id="tool" type="number" value="3" step="0.1" min="0.1" max="50" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Feed, мм/мин</label>
+                    <input id="feed" type="number" value="300" step="10" min="10" max="5000" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Spindle, об/мин</label>
+                    <input id="spindle" type="number" value="8000" step="100" min="1000" max="24000" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                </div>
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">Clearance Z, мм</label>
+                    <input id="clearance" type="number" value="5" step="0.5" min="1" max="50" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                </div>
+            </div>
+
+            <div class="flex items-center space-x-4">
+                <button onclick="gen()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">Сгенерировать G-код</button>
+                <span id="glog" class="text-gray-400"></span>
+            </div>
+        </div>
+
+        <!-- NC Viewer Section -->
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg" id="nc-viewer-section" style="display: none;">
+            <h2 class="text-xl font-semibold mb-4">NC Viewer - Просмотр G-кода</h2>
+            <div id="nc-viewer" class="bg-gray-900 rounded-lg flex items-center justify-center">
+                <div class="text-gray-400 p-8">Сгенерируйте G-код для просмотра</div>
+            </div>
+            <div id="nc-stats" class="mt-4"></div>
+        </div>
+    </div>
+
+    <script>
+        let LAST_MODEL_PATH = null;
+        let LAST_GCODE_PATH = null;
+
+        // Enhanced analyze function with model complexity analysis
+        async function analyze() {
+            const file = document.getElementById('file').files[0];
+            const log = document.getElementById('log');
+            if (!file) {
+                log.textContent = 'Выберите файл';
+                return;
+            }
+            if (file.size > 100 * 1024 * 1024) {
+                log.textContent = 'Файл слишком большой (макс. 100 МБ)';
+                return;
+            }
+            log.textContent = 'Загрузка...';
+            const fd = new FormData();
+            fd.append('file', file);
+            fd.append('units', document.getElementById('units').value || 'auto');
+            fd.append('linear_deflection', document.getElementById('linDef').value || '0.1');
+            fd.append('angular_deflection_deg', document.getElementById('angDef').value || '15');
+            fd.append('relative', document.getElementById('rel').checked ? 'true' : 'false');
+
+            try {
+                const r = await fetch('/upload', { method: 'POST', body: fd });
+                const data = await r.json();
+                if (!data.success) {
+                    log.textContent = 'Ошибка: ' + (data.error || 'Неизвестная ошибка');
+                    return;
+                }
+                LAST_MODEL_PATH = data.model_path;
+                const links = [];
+                if (data.model_path) {
+                    links.push(`<a href="${data.model_path}" target="_blank" class="text-blue-400 hover:underline">Скачать STL</a>`);
+                }
+                if (data.result_filename) {
+                    links.push(`<a href="/download_results?filename=${data.result_filename}" target="_blank" class="text-blue-400 hover:underline">JSON-результат</a>`);
+                }
+                log.innerHTML = 'Готово — ' + links.join(' · ');
+
+                // 3D Viewer with Three.js
+                const viewer = document.getElementById('viewer');
+                if (typeof THREE !== 'undefined' && data.model_path) {
+                    loadSTLModel(data.model_path, viewer, data.geometry);
+                } else if (data.preview_png_data) {
+                    viewer.innerHTML = `<img src="${data.preview_png_data}" alt="preview" class="max-w-full max-h-full object-contain rounded-lg">`;
+                } else {
+                    viewer.innerHTML = '<div class="text-gray-400 p-8">Предпросмотр недоступен</div>';
+                }
+
+                // Display metadata
+                displayMetadata(data);
+
+                // Analyze model complexity
+                if (data.geometry_analysis) {
+                    analyzeModelComplexity(data);
+                }
+
+                // Show AI chat
+                document.getElementById('ai_chat').style.display = 'block';
+
+                // Auto-analyze with AI
+                setTimeout(() => {
+                    autoAnalyzeWithAI(data);
+                }, 1000);
+
+            } catch (err) {
+                log.textContent = 'Сетевая ошибка: ' + err;
+            }
+        }
+
+        function displayMetadata(data) {
+            const meta = document.getElementById('meta');
+            const rows = [];
+            function push(k, v) {
+                rows.push(`<tr class="border-b border-gray-700"><td class="py-2 px-4">${k}</td><td class="py-2 px-4">${v}</td></tr>`);
+            }
+            if (data.file_info) {
+                push('Файл', data.file_info.filename);
+                push('Размер файла', `${data.file_info.file_size} байт`);
+                push('Тип файла', data.file_info.file_type);
+            }
+            if (data.geometry && data.geometry.dimensions) {
+                const d = data.geometry.dimensions;
+                push('Размеры (мм)', `${d.length} × ${d.width} × ${d.height}`);
+            }
+            if (data.mesh_info) {
+                push('Вершины', data.mesh_info.vertices);
+                push('Грани', data.mesh_info.faces);
+            }
+            meta.innerHTML = `<table class="w-full border-collapse"><thead><tr class="bg-gray-700"><th class="py-2 px-4 text-left">Параметр</th><th class="py-2 px-4 text-left">Значение</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+        }
+
+        function analyzeModelComplexity(data) {
+            // Send request to analyze model complexity
+            fetch('/analyze_complexity', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model_path: data.model_path,
+                    geometry_analysis: data.geometry_analysis
+                })
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.success) {
+                    displayComplexityAnalysis(result.analysis);
+                }
+            })
+            .catch(error => {
+                console.error('Complexity analysis error:', error);
+            });
+        }
+
+        function displayComplexityAnalysis(analysis) {
+            const complexityDiv = document.getElementById('complexity_analysis');
+            const detailsDiv = document.getElementById('complexity_details');
+
+            let html = `
+                <div class="bg-gray-700 p-4 rounded-lg">
+                    <h4 class="font-medium text-blue-400 mb-2">Оценка сложности</h4>
+                    <div class="space-y-1 text-sm">
+                        <div>Сложность: <span class="text-yellow-400">${analysis.complexity_score}/10</span></div>
+                        <div>Установок: <span class="text-green-400">${analysis.total_installations}</span></div>
+                        <div>Время обработки: <span class="text-orange-400">${analysis.machining_time_estimate} мин</span></div>
+                    </div>
+                </div>
+                <div class="bg-gray-700 p-4 rounded-lg">
+                    <h4 class="font-medium text-blue-400 mb-2">Обнаруженные элементы</h4>
+                    <div class="space-y-1 text-sm">
+                        <div>Отверстия: <span class="text-yellow-400">${analysis.features_detected.holes || 0}</span></div>
+                        <div>Карманы: <span class="text-yellow-400">${analysis.features_detected.pockets || 0}</span></div>
+                        <div>Фаски: <span class="text-yellow-400">${analysis.features_detected.chamfers || 0}</span></div>
+                        <div>Резьбы: <span class="text-yellow-400">${analysis.features_detected.threads || 0}</span></div>
+                        <div>Бобышки: <span class="text-yellow-400">${analysis.features_detected.bosses || 0}</span></div>
+                    </div>
+                </div>
+            `;
+
+            if (analysis.estimated_operations && analysis.estimated_operations.length > 0) {
+                html += `
+                    <div class="bg-gray-700 p-4 rounded-lg col-span-2">
+                        <h4 class="font-medium text-blue-400 mb-2">План операций</h4>
+                        <div class="space-y-2">
+                `;
+                analysis.estimated_operations.forEach((op, index) => {
+                    html += `
+                        <div class="bg-gray-600 p-3 rounded flex justify-between items-center">
+                            <div>
+                                <div class="font-medium">${index + 1}. ${op.operation}</div>
+                                <div class="text-sm text-gray-300">Количество: ${op.count}</div>
+                                <div class="text-xs text-gray-400">Инструменты: ${op.tools.join(', ')}</div>
+                            </div>
+                            <div class="text-sm text-yellow-400">${op.estimated_time} мин</div>
+                        </div>
+                    `;
+                });
+                html += '</div></div>';
+            }
+
+            if (analysis.recommendations && analysis.recommendations.length > 0) {
+                html += `
+                    <div class="bg-gray-700 p-4 rounded-lg col-span-2">
+                        <h4 class="font-medium text-blue-400 mb-2">Рекомендации</h4>
+                        <div class="space-y-1 text-sm">
+                `;
+                analysis.recommendations.forEach(rec => {
+                    html += `<div class="text-green-400">• ${rec}</div>`;
+                });
+                html += '</div></div>';
+            }
+
+            detailsDiv.innerHTML = html;
+            complexityDiv.style.display = 'block';
+        }
+
+        // Enhanced G-code generation with NC Viewer
+        async function gen() {
+            const glog = document.getElementById('glog');
+            if (!LAST_MODEL_PATH) {
+                glog.textContent = 'Сначала загрузите модель.';
+                return;
+            }
+
+            const operationType = document.getElementById('operation_type').value;
+            const controller = document.getElementById('controller').value;
+
+            const payload = {
+                model_path: LAST_MODEL_PATH,
+                controller: controller,
+                operation_type: operationType,
+                tool_diam: parseFloat(document.getElementById('tool').value || '3'),
+                feed: parseFloat(document.getElementById('feed').value || '300'),
+                clearance: parseFloat(document.getElementById('clearance').value || '5'),
+                spindle: parseInt(document.getElementById('spindle').value || '8000')
+            };
+
+            glog.textContent = 'Генерация G-кода...';
+            try {
+                const r = await fetch('/generate_gcode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await r.json();
+                if (!data.success) {
+                    glog.textContent = 'Ошибка: ' + (data.error || '');
+                    return;
+                }
+                LAST_GCODE_PATH = data.gcode_path;
+                glog.innerHTML = `Готово — <a href="${data.gcode_path}" target="_blank" class="text-blue-400 hover:underline">скачать G-код (${controller.toUpperCase()} ${operationType})</a>`;
+                
+                // Show NC Viewer
+                showNCViewer(data.gcode_path);
+            } catch (err) {
+                glog.textContent = 'Сетевая ошибка: ' + err;
+            }
+        }
+
+        function showNCViewer(gcodePath) {
+            const ncViewerSection = document.getElementById('nc-viewer-section');
+            const ncViewer = document.getElementById('nc-viewer');
+            const ncStats = document.getElementById('nc-stats');
+
+            ncViewer.innerHTML = '<div class="text-blue-400 p-8">Загрузка NC Viewer...</div>';
+
+            // Parse G-code for viewer
+            fetch('/parse_gcode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ gcode_path: gcodePath })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    displayNCViewer(data.parsed_data);
+                    displayNCStats(data.parsed_data);
+                } else {
+                    ncViewer.innerHTML = '<div class="text-red-400 p-8">Ошибка парсинга G-кода</div>';
+                }
+            })
+            .catch(error => {
+                ncViewer.innerHTML = '<div class="text-red-400 p-8">Ошибка загрузки NC Viewer</div>';
+            });
+
+            ncViewerSection.style.display = 'block';
+        }
+
+        function displayNCViewer(parsedData) {
+            const ncViewer = document.getElementById('nc-viewer');
+            
+            // Create SVG for 2D visualization
+            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('width', '100%');
+            svg.setAttribute('height', '300');
+            svg.setAttribute('viewBox', '0 0 400 300');
+            svg.style.background = '#1f2937';
+
+            const coords = parsedData.coordinates;
+            const moves = parsedData.moves;
+
+            // Calculate scale and offset
+            const width = coords.max[0] - coords.min[0];
+            const height = coords.max[1] - coords.min[1];
+            const scale = Math.min(350 / width, 250 / height);
+            const offsetX = 200 - (coords.min[0] + width/2) * scale;
+            const offsetY = 150 - (coords.min[1] + height/2) * scale;
+
+            // Draw moves
+            let currentX = 0, currentY = 0;
+            moves.forEach(move => {
+                if (move.x !== undefined && move.y !== undefined) {
+                    const x1 = currentX * scale + offsetX;
+                    const y1 = currentY * scale + offsetY;
+                    const x2 = move.x * scale + offsetX;
+                    const y2 = move.y * scale + offsetY;
+
+                    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                    line.setAttribute('x1', x1);
+                    line.setAttribute('y1', y1);
+                    line.setAttribute('x2', x2);
+                    line.setAttribute('y2', y2);
+                    
+                    if (move.type === 'rapid') {
+                        line.setAttribute('class', 'nc-rapid');
+                    } else {
+                        line.setAttribute('class', 'nc-path');
+                    }
+
+                    svg.appendChild(line);
+                    currentX = move.x;
+                    currentY = move.y;
+                }
+            });
+
+            // Draw cycles
+            parsedData.cycles.forEach(cycle => {
+                if (cycle.x !== undefined && cycle.y !== undefined) {
+                    const x = cycle.x * scale + offsetX;
+                    const y = cycle.y * scale + offsetY;
+
+                    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    circle.setAttribute('cx', x);
+                    circle.setAttribute('cy', y);
+                    circle.setAttribute('r', 3);
+                    circle.setAttribute('class', 'nc-cycle');
+                    svg.appendChild(circle);
+                }
+            });
+
+            ncViewer.innerHTML = '';
+            ncViewer.appendChild(svg);
+        }
+
+        function displayNCStats(parsedData) {
+            const ncStats = document.getElementById('nc-stats');
+            const stats = parsedData.statistics;
+            const info = parsedData.program_info;
+
+            let html = `
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="bg-gray-700 p-4 rounded-lg">
+                        <h4 class="font-medium text-blue-400 mb-2">Статистика программы</h4>
+                        <div class="space-y-1 text-sm">
+                            <div>Всего строк: <span class="text-yellow-400">${parsedData.total_lines}</span></div>
+                            <div>Быстрые ходы: <span class="text-red-400">${stats.rapid_moves}</span></div>
+                            <div>Линейные ходы: <span class="text-blue-400">${stats.linear_moves}</span></div>
+                            <div>Циклы: <span class="text-green-400">${stats.total_cycles}</span></div>
+                        </div>
+                    </div>
+                    <div class="bg-gray-700 p-4 rounded-lg">
+                        <h4 class="font-medium text-blue-400 mb-2">Параметры</h4>
+                        <div class="space-y-1 text-sm">
+                            <div>Ø инструмента: <span class="text-yellow-400">${info.tool_diameter} мм</span></div>
+                            <div>Подача: <span class="text-yellow-400">${info.feed_rate} мм/мин</span></div>
+                            <div>Обороты: <span class="text-yellow-400">${info.spindle_speed} об/мин</span></div>
+                        </div>
+                    </div>
+                    <div class="bg-gray-700 p-4 rounded-lg">
+                        <h4 class="font-medium text-blue-400 mb-2">Время обработки</h4>
+                        <div class="space-y-1 text-sm">
+                            <div>Оценочное время: <span class="text-green-400">${Math.round(stats.estimated_time)} сек</span></div>
+                            <div>Координаты: <span class="text-gray-400">X: ${coords.min[0].toFixed(1)}-${coords.max[0].toFixed(1)}</span></div>
+                            <div>Y: <span class="text-gray-400">${coords.min[1].toFixed(1)}-${coords.max[1].toFixed(1)}</span></div>
+                            <div>Z: <span class="text-gray-400">${coords.min[2].toFixed(1)}-${coords.max[2].toFixed(1)}</span></div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            ncStats.innerHTML = html;
+        }
+
+        // AI Chat functions (simplified for space)
+        async function sendChatMessage() {
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+            if (!message) return;
+
+            const messagesContainer = document.getElementById('chat-messages');
+            const provider = document.getElementById('chat_ai_provider').value;
+
+            addChatMessage(message, 'user');
+            input.value = '';
+
+            const loadingId = addChatMessage('Анализирую деталь...', 'ai', true);
+
+            try {
+                const response = await fetch('/ai_chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: message,
+                        provider: provider,
+                        analysis_data: window.lastAnalysisData
+                    })
+                });
+
+                const data = await response.json();
+                const loadingElement = document.getElementById(loadingId);
+                if (loadingElement) loadingElement.remove();
+
+                if (data.success) {
+                    addChatMessage(data.response, 'ai');
+                } else {
+                    addChatMessage('Ошибка: ' + (data.error || 'Неизвестная ошибка'), 'ai');
+                }
+            } catch (error) {
+                const loadingElement = document.getElementById(loadingId);
+                if (loadingElement) loadingElement.remove();
+                addChatMessage('Сетевая ошибка: ' + error.message, 'ai');
+            }
+        }
+
+        function addChatMessage(message, type, isLoading = false) {
+            const messagesContainer = document.getElementById('chat-messages');
+            const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+            const messageDiv = document.createElement('div');
+            messageDiv.id = messageId;
+            messageDiv.className = `chat-message ${type}-message ${isLoading ? 'loading' : ''}`;
+            messageDiv.textContent = message;
+
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            return messageId;
+        }
+
+        async function autoAnalyzeWithAI(analysisData) {
+            const messagesContainer = document.getElementById('chat-messages');
+            const provider = document.getElementById('chat_ai_provider').value;
+
+            const autoMessage = "Проанализируй эту деталь и дай рекомендации по обработке: какие инструменты использовать, режимы резания, последовательность операций и G-код.";
+            addChatMessage(autoMessage, 'user');
+
+            const loadingId = addChatMessage('Анализирую деталь с помощью ИИ...', 'ai', true);
+
+            try {
+                const response = await fetch('/ai_chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: autoMessage,
+                        provider: provider,
+                        analysis_data: analysisData
+                    })
+                });
+
+                const data = await response.json();
+                const loadingElement = document.getElementById(loadingId);
+                if (loadingElement) loadingElement.remove();
+
+                if (data.success) {
+                    addChatMessage(data.response, 'ai');
+                } else {
+                    addChatMessage('Ошибка ИИ анализа: ' + (data.error || 'Неизвестная ошибка'), 'ai');
+                }
+            } catch (error) {
+                const loadingElement = document.getElementById(loadingId);
+                if (loadingElement) loadingElement.remove();
+                addChatMessage('Ошибка сети при анализе ИИ: ' + error.message, 'ai');
+            }
+        }
+
+        // 3D Viewer functions (simplified)
+        let scene, camera, renderer, controls, model;
+
+        function loadSTLModel(modelPath, container, geometry) {
+            if (typeof THREE === 'undefined') {
+                container.innerHTML = '<div class="text-gray-400 p-8">Three.js не загружен</div>';
+                return;
+            }
+
+            if (model) {
+                scene.remove(model);
+            }
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0b1b24);
+
+            camera = new THREE.PerspectiveCamera(75, container.clientWidth / container.clientHeight, 0.1, 1000);
+            camera.position.set(50, 50, 50);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+            if (typeof THREE.OrbitControls !== 'undefined') {
+                controls = new THREE.OrbitControls(camera, renderer.domElement);
+                controls.enableDamping = true;
+                controls.dampingFactor = 0.05;
+            }
+
+            container.innerHTML = '';
+            container.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(50, 50, 50);
+            directionalLight.castShadow = true;
+            scene.add(directionalLight);
+
+            const loader = new THREE.STLLoader();
+            loader.load(modelPath, function(geometry) {
+                const material = new THREE.MeshPhongMaterial({ 
+                    color: 0x55aaff,
+                    shininess: 100,
+                    transparent: true,
+                    opacity: 0.9
+                });
+
+                model = new THREE.Mesh(geometry, material);
+                model.castShadow = true;
+                model.receiveShadow = true;
+
+                const box = new THREE.Box3().setFromObject(model);
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scale = 50 / maxDim;
+
+                model.scale.setScalar(scale);
+                model.position.sub(center.multiplyScalar(scale));
+
+                scene.add(model);
+                animate();
+            }, undefined, function(error) {
+                console.error('Error loading STL:', error);
+                container.innerHTML = '<div class="text-red-400 p-8">Ошибка загрузки 3D модели</div>';
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (controls) controls.update();
+            if (renderer && scene && camera) {
+                renderer.render(scene, camera);
+            }
+        }
+
+        // Handle Enter key in chat input
+        document.addEventListener('DOMContentLoaded', function() {
+            const chatInput = document.getElementById('chat-input');
+            if (chatInput) {
+                chatInput.addEventListener('keypress', function(e) {
+                    if (e.key === 'Enter') {
+                        sendChatMessage();
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html>
