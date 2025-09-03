@@ -19,15 +19,33 @@ import requests
 import re
 import threading
 import traceback
+import glob
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from enum import Enum
 from collections import defaultdict
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple, List
+from string import Template
 
 import flask
 from flask import Flask, request, jsonify, send_file, send_from_directory, render_template_string
+from werkzeug.utils import secure_filename
+
+# ---- Server-side PNG rendering (fallback) ----
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+    try:
+        from stl import mesh as stlmesh
+    except Exception:
+        stlmesh = None
+except Exception:
+    matplotlib = None
+    stlmesh = None
+    plt = None
 
 # ---- Embedded Classes ----
 class ErrorType(Enum):
@@ -250,29 +268,47 @@ class MetricsCollector:
                 "uptime_seconds": (datetime.now() - self.start_time).total_seconds()
             }
 
-# ---- Configuration ----
+# ---- Logging setup ----
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("CNCera")
+
+# ---- Directory setup ----
+BASE = Path(__file__).parent.resolve()
+TEMP = BASE / "temp"
+TEMP.mkdir(exist_ok=True)
+MODELS = BASE / "models"
+MODELS.mkdir(exist_ok=True)
+STATIC = BASE / "static"
+STATIC.mkdir(exist_ok=True)
+
+ALLOWED_EXTENSIONS = {".step", ".stp", ".stl"}
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
-
-# Directories
-MODELS = Path("models")
-STATIC = Path("static")
-TEMP = Path("temp")
-
-# Create directories
-for d in [MODELS, STATIC, TEMP]:
-    d.mkdir(exist_ok=True)
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100MB limit
 
 # Initialize components
 error_handler = ErrorHandler(logging.getLogger(__name__))
 metrics_collector = MetricsCollector()
 
+# ---- Global error handler ----
+@app.errorhandler(Exception)
+def handle_error(e):
+    logger.error("Uncaught exception: %s", e, exc_info=True)
+    if request.path in ("/upload", "/generate_gcode"):
+        return jsonify({"success": False, "error": f"Critical error: {e.__class__.__name__}: {str(e)}"}), 200
+    return "Internal Server Error", 500
+
 # ---- FreeCAD Configuration ----
 def get_freecad_cmd():
     """Get FreeCAD command path from environment or default"""
-    freecad_cmd = os.getenv("FREECAD_CMD")
-    if freecad_cmd and os.path.exists(freecad_cmd):
-        return freecad_cmd
+    # Check environment variables first
+    for key in ("FREECAD_CMD", "FREECADCMD_PATH", "FREECADCMD"):
+        freecad_cmd = os.getenv(key)
+        if freecad_cmd and os.path.exists(freecad_cmd):
+            return freecad_cmd
     
     # Try common paths
     common_paths = [
@@ -294,6 +330,304 @@ def get_freecad_cmd():
     return None
 
 # ---- Utility Functions ----
+def allowed_file(filename: str) -> bool:
+    return Path(filename).suffix.lower() in {".step", ".stp", ".stl"}
+
+def validate_float(value, default: float, min_val: float, max_val: float) -> float:
+    try:
+        val = float(value)
+        return max(min_val, min(max_val, val))
+    except (TypeError, ValueError):
+        return default
+
+def validate_int(value, default: int, min_val: int, max_val: int) -> int:
+    try:
+        val = int(value)
+        return max(min_val, min(max_val, val))
+    except (TypeError, ValueError):
+        return default
+
+def get_uploaded_size(fs) -> int:
+    """Safely determine uploaded file size from a Werkzeug FileStorage."""
+    try:
+        cl = getattr(fs, "content_length", None)
+        if isinstance(cl, int) and cl >= 0:
+            return cl
+    except Exception:
+        pass
+    try:
+        stream = getattr(fs, "stream", None)
+        if stream is not None and hasattr(stream, "tell") and hasattr(stream, "seek"):
+            pos = stream.tell()
+            stream.seek(0, 2)  # SEEK_END
+            size = stream.tell()
+            stream.seek(pos, 0)  # SEEK_SET back
+            if isinstance(size, int) and size >= 0:
+                return size
+    except Exception:
+        pass
+    try:
+        hdr = request.headers.get("Content-Length")
+        if hdr is not None:
+            return int(hdr)
+    except Exception:
+        pass
+    return 0
+
+def analyze_stl(stl_path: Path) -> Dict:
+    if stlmesh is None:
+        return {"vertices": 0, "faces": 0}
+    try:
+        mesh = stlmesh.Mesh.from_file(str(stl_path))
+        return {
+            "vertices": len(mesh.vectors) * 3,
+            "faces": len(mesh.vectors)
+        }
+    except Exception as e:
+        logger.warning(f"STL analysis failed: {e}")
+        return {"vertices": 0, "faces": 0}
+
+def render_stl_to_png(stl_path: Path, png_path: Path) -> bool:
+    if matplotlib is None or stlmesh is None:
+        logger.warning("matplotlib or numpy-stl not available: PNG preview disabled")
+        return False
+    try:
+        mesh = stlmesh.Mesh.from_file(str(stl_path))
+        faces = mesh.vectors
+        xs, ys, zs = mesh.x, mesh.y, mesh.z
+        cx, cy, cz = (xs.min() + xs.max()) / 2, (ys.min() + ys.max()) / 2, (zs.min() + zs.max()) / 2
+        r = max((xs.max() - xs.min()) / 2, (ys.max() - ys.min()) / 2, (zs.max() - zs.min()) / 2) or 1.0
+        fig = plt.figure(figsize=(8, 8), dpi=150)
+        ax = fig.add_subplot(111, projection="3d")
+        fig.patch.set_facecolor("#0b1b24")
+        ax.set_facecolor("#0b1b24")
+        ax.set_proj_type("ortho")
+        coll = Poly3DCollection(faces, linewidths=0.1)
+        coll.set_facecolor((0.55, 0.75, 0.95, 1.0))
+        coll.set_edgecolor((0.1, 0.1, 0.15, 0.25))
+        ax.add_collection3d(coll)
+        ax.set_xlim(cx - r, cx + r)
+        ax.set_ylim(cy - r, cy + r)
+        ax.set_zlim(cz - r, cz + r)
+        ax.set_axis_off()
+        ax.view_init(30, 45)
+        fig.tight_layout(pad=0)
+        fig.savefig(str(png_path), transparent=False, facecolor=fig.get_facecolor())
+        plt.close(fig)
+        return True
+    except Exception as e:
+        logger.warning(f"PNG render failed: {e}")
+        try:
+            plt.close("all")
+        except Exception:
+            pass
+        return False
+
+def locate_freecadcmd() -> Optional[str]:
+    for key in ("FREECADCMD_PATH", "FREECADCMD"):
+        val = os.environ.get(key)
+        if val and os.path.isfile(val):
+            return val
+    for name in ("FreeCADCmd.exe", "FreeCADCmd"):
+        path = shutil.which(name)
+        if path:
+            return path
+    patterns = [
+        r"C:/Program Files/FreeCAD*/bin/FreeCADCmd*.exe",
+        r"C:/Program Files (x86)/FreeCAD*/bin/FreeCADCmd*.exe",
+        "/usr/bin/FreeCADCmd",
+        "/usr/local/bin/FreeCADCmd",
+        "/Applications/FreeCAD.app/Contents/MacOS/FreeCADCmd"
+    ]
+    import glob
+    for pattern in patterns:
+        matches = glob.glob(pattern)
+        for match in matches:
+            if os.path.isfile(match):
+                return match
+    return None
+
+def freecad_export_step_to_stl(
+        step_path: Path,
+        stl_path: Path,
+        linear_deflection: float = 0.1,
+        angular_deflection_deg: float = 15.0,
+        relative: bool = False,
+        units: str = "auto"
+) -> Dict:
+    exe = locate_freecadcmd()
+    if not exe:
+        raise FileNotFoundError("FreeCADCmd not found. Set FREECADCMD_PATH or add FreeCAD/bin to PATH.")
+
+    stl_path.parent.mkdir(parents=True, exist_ok=True)
+    sys_tmp = Path(tempfile.gettempdir())
+    tmp_py = sys_tmp / f"fc_{hashlib.md5(str(step_path).encode()).hexdigest()}.py"
+    out_json = sys_tmp / f"fc_{hashlib.md5((str(step_path) + '_json').encode()).hexdigest()}.json"
+
+    sp = str(step_path).replace("\\", "/")
+    tp = str(stl_path).replace("\\", "/")
+    jp = str(out_json).replace("\\", "/")
+
+    lin = validate_float(linear_deflection, 0.1, 0.01, 10.0)
+    ang = validate_float(angular_deflection_deg, 15.0, 0.01, 89.0)
+    rel = "True" if relative else "False"
+    units = units.lower() if units in ("auto", "mm", "inch", "m") else "auto"
+
+    from string import Template
+    fc_script_template = """
+import os, sys, json, traceback, math
+import FreeCAD as App
+import Part, Mesh, MeshPart
+
+step_path = r"$SP"
+stl_path = r"$TP"
+json_path = r"$JP"
+
+linear_deflection = $LIN
+angular_deflection_deg = $ANG
+relative = $REL
+units = "$UNITS"
+
+def write_json(obj):
+    try:
+        with open(json_path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(obj, ensure_ascii=False))
+    except Exception as ee:
+        print("WRITE_JSON_FAIL", ee)
+
+try:
+    doc = App.newDocument("tmpdoc")
+    import Import
+    Import.insert(step_path, "tmpdoc")
+    objects = doc.Objects
+    if not objects:
+        raise Exception("No objects found in the STEP file")
+    shape_objects = [obj for obj in objects if hasattr(obj, 'Shape') and obj.Shape is not None]
+    if not shape_objects:
+        raise Exception("No valid Shape objects found in the STEP file")
+    if len(shape_objects) == 1:
+        combined_shape = shape_objects[0].Shape
+    else:
+        combined_shape = shape_objects[0].Shape
+        for obj in shape_objects[1:]:
+            try:
+                combined_shape = combined_shape.fuse(obj.Shape)
+            except:
+                try:
+                    import Part
+                    shapes = [combined_shape] + [obj.Shape for obj in shape_objects[1:]]
+                    combined_shape = Part.makeCompound(shapes)
+                    break
+                except:
+                    pass
+    scale = {"inch": 25.4, "m": 1000.0, "mm": 1.0, "auto": 1.0}[units]
+    if abs(scale - 1.0) > 1e-9:
+        m = App.Matrix()
+        m.A11 = scale; m.A22 = scale; m.A33 = scale
+        combined_shape = combined_shape.transformGeometry(m)
+    bbox = combined_shape.BoundBox
+    success = True
+    err = ""
+    try:
+        mesh_obj = MeshPart.meshFromShape(
+            Shape=combined_shape,
+            LinearDeflection=linear_deflection,
+            AngularDeflection=math.radians(angular_deflection_deg),
+            Relative=relative
+        )
+        mesh_obj.write(stl_path)
+    except Exception as e2:
+        success = False
+        err = str(e2)
+        traceback.print_exc()
+    res = {
+        "success": success,
+        "error": err,
+        "file_info": {
+            "filename": os.path.basename(step_path),
+            "file_type": ".step",
+            "file_size": os.path.getsize(step_path)
+        },
+        "geometry": {
+            "dimensions": {
+                "length": round(bbox.XLength, 3),
+                "width": round(bbox.YLength, 3),
+                "height": round(bbox.ZLength, 3)
+            },
+            "units": "mm",
+            "zero_point": {
+                "G54": {
+                    "name": "G54",
+                    "description": "bbox center",
+                    "position": [
+                        round((bbox.XMin + bbox.XMax) / 2.0, 3),
+                        round((bbox.YMin + bbox.YMax) / 2.0, 3),
+                        round((bbox.ZMin + bbox.ZMax) / 2.0, 3)
+                    ]
+                }
+            }
+        },
+        "meshing": {
+            "LinearDeflection": linear_deflection,
+            "AngularDeflection_deg": angular_deflection_deg,
+            "Relative": relative
+        }
+    }
+    write_json(res)
+    print("OK")
+except Exception as e:
+    error_info = {
+        "success": False, 
+        "error": str(e), 
+        "traceback": traceback.format_exc()
+    }
+    write_json(error_info)
+    print("ERROR:", e)
+    traceback.print_exc()
+"""
+    fc_script = Template(fc_script_template).substitute(
+        SP=sp, TP=tp, JP=jp, LIN=lin, ANG=ang, REL=rel, UNITS=units
+    )
+
+    tmp_py.write_text(fc_script, encoding="utf-8")
+    creationflags = 0x08000000 if os.name == "nt" else 0
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    try:
+        p = subprocess.run(
+            [exe, str(tmp_py)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=600,
+            creationflags=creationflags,
+            env=env
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("FreeCADCmd execution timed out")
+
+    if not out_json.exists():
+        err_txt = p.stderr.decode("utf-8", errors="ignore")[-300:] if p.stderr else ""
+        out_txt = p.stdout.decode("utf-8", errors="ignore")[-300:] if p.stdout else ""
+        raise RuntimeError(f"FreeCAD failed to generate JSON (stdout: {out_txt} | stderr: {err_txt})")
+
+    try:
+        data = json.loads(out_json.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise RuntimeError(f"Invalid JSON from FreeCAD: {e}")
+    finally:
+        for path in (tmp_py, out_json):
+            try:
+                path.unlink()
+            except Exception:
+                pass
+
+    if not data.get("success", False):
+        raise RuntimeError(f"FreeCAD meshing/export failed: {data.get('error', 'unknown error')}")
+
+    return data
+
 def get_controller_settings(controller: str) -> Dict[str, str]:
     """Get G-code settings for specific controller"""
     settings = {
@@ -352,77 +686,87 @@ def get_controller_settings(controller: str) -> Dict[str, str]:
 
 def process_uploaded_file(file, units: str, linear_deflection: float, angular_deflection_deg: float, relative: bool) -> Dict:
     """Process uploaded file with enhanced error handling"""
+    disk_path = None
     try:
-        # Save uploaded file
-        filename = file.filename
-        if not SecurityValidator.validate_filename(filename):
-            raise CNCeraError(ErrorType.SECURITY_ERROR, "Invalid filename", "Недопустимое имя файла")
-        
-        file_hash = hashlib.md5(filename.encode()).hexdigest()[:8]
-        temp_path = TEMP / f"{file_hash}_{filename}"
-        
-        file.save(str(temp_path))
-        
-        # Convert STEP to STL if needed and perform detailed geometry analysis
-        geometry_analysis = None
-        if filename.lower().endswith(('.step', '.stp')):
-            # Perform detailed geometry analysis first
-            try:
-                geometry_analysis = analyze_geometry_detailed(temp_path)
-            except Exception as e:
-                logger.warning(f"Detailed geometry analysis failed: {e}")
-                geometry_analysis = None
-            
-            stl_path = convert_step_to_stl(temp_path, linear_deflection, angular_deflection_deg)
+        if "file" not in request.files:
+            return jsonify({"success": False, "error": "Нет файла"})
+        file = request.files["file"]
+        if file.filename == "":
+            return jsonify({"success": False, "error": "Не выбран файл"})
+        if not allowed_file(file.filename):
+            return jsonify({"success": False, "error": "Поддерживаются .step, .stp, .stl"})
+        max_len = app.config.get("MAX_CONTENT_LENGTH")
+        sz = get_uploaded_size(file)
+        if isinstance(max_len, int) and max_len > 0 and isinstance(sz, int) and sz > max_len:
+            return jsonify({"success": False, "error": "Файл слишком большой (макс. 100 МБ)"})
+
+        filename = secure_filename(file.filename)
+        disk_path = TEMP / filename
+        file.save(str(disk_path))
+
+        units = request.form.get("units", "auto").lower()
+        linear_deflection = validate_float(request.form.get("linear_deflection", 0.1), 0.1, 0.01, 10.0)
+        angular_deflection_deg = validate_float(request.form.get("angular_deflection_deg", 15), 15.0, 0.01, 89.0)
+        relative = request.form.get("relative", "false").lower() in ("1", "true", "yes", "on")
+
+        ext = disk_path.suffix.lower()
+        res = {}
+        stl_name = hashlib.md5(str(disk_path).encode()).hexdigest() + ".stl"
+        stl_abs = MODELS / stl_name
+
+        if ext in (".step", ".stp"):
+            info = freecad_export_step_to_stl(
+                disk_path, stl_abs, linear_deflection, angular_deflection_deg, relative, units
+            )
+            res.update(info)
+        elif ext == ".stl":
+            shutil.copyfile(str(disk_path), str(stl_abs))
+            res.update({
+                "success": True,
+                "file_info": {
+                    "filename": filename,
+                    "file_type": ".stl",
+                    "file_size": disk_path.stat().st_size
+                },
+                "geometry": {
+                    "dimensions": {"length": 0, "width": 0, "height": 0},
+                    "units": "mm"
+                }
+            })
         else:
-            stl_path = temp_path
-        
-        # Analyze STL (simplified without numpy)
-        result = analyze_stl_file_simple(stl_path, units, relative)
-        
-        # Add geometry analysis to result
-        if geometry_analysis:
-            result["geometry_analysis"] = geometry_analysis.get("geometry_analysis", {})
-        
-        # Generate preview (simplified)
-        preview_png_data = None
-        
-        # Save results
-        result_filename = f"analysis_{file_hash}.json"
-        result_path = TEMP / result_filename
-        with open(result_path, 'w', encoding='utf-8') as f:
-            json.dump(result, f, ensure_ascii=False, indent=2)
-        
-        # Move STL to models directory
-        model_filename = f"model_{file_hash}.stl"
-        model_path = MODELS / model_filename
-        shutil.move(str(stl_path), str(model_path))
-        
-        # Cleanup temp file
-        if temp_path.exists() and temp_path != stl_path:
-            temp_path.unlink()
-        
-        return {
-            "model_path": f"/models/{model_filename}",
-            "result_filename": result_filename,
-            "preview_png": None,
-            "preview_png_data": preview_png_data,
-            "file_info": {
-                "filename": filename,
-                "file_size": temp_path.stat().st_size if temp_path.exists() else 0,
-                "file_type": "STEP" if filename.lower().endswith(('.step', '.stp')) else "STL"
-            },
-            "geometry": result.get("geometry"),
-            "mesh_info": result.get("mesh_info")
-        }
-        
+            return jsonify({"success": False, "error": "Неподдерживаемый тип файла"})
+
+        res["model_path"] = f"/models/{stl_name}"
+        res["mesh_info"] = analyze_stl(stl_abs)
+        result_name = f"result_{hashlib.md5(str(disk_path).encode()).hexdigest()}.json"
+        (TEMP / result_name).write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
+        res["result_filename"] = result_name
+
+        png_abs = MODELS / (Path(stl_name).with_suffix(".png").name)
+        if not png_abs.exists():
+            render_stl_to_png(stl_abs, png_abs)
+        if png_abs.exists():
+            res["preview_png"] = f"/models/{png_abs.name}"
+            try:
+                res["preview_png_data"] = "data:image/png;base64," + base64.b64encode(png_abs.read_bytes()).decode(
+                    "ascii")
+            except Exception as e:
+                logger.warning(f"PNG base64 embed failed: {e}")
+
+        return res
+    except FileNotFoundError as e:
+        return jsonify({"success": False, "error": str(e)})
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Таймаут запуска FreeCADCmd"})
     except Exception as e:
-        # Cleanup on error
-        if 'temp_path' in locals() and temp_path.exists():
-            temp_path.unlink()
-        if 'stl_path' in locals() and stl_path.exists() and stl_path != temp_path:
-            stl_path.unlink()
-        raise
+        logger.error("Upload failed: %s", e, exc_info=True)
+        return jsonify({"success": False, "error": f"Критическая ошибка: {str(e)}"})
+    finally:
+        if disk_path and disk_path.exists():
+            try:
+                disk_path.unlink()
+            except Exception:
+                pass
 
 def analyze_geometry_detailed(step_path: Path) -> Dict:
     """Детальный анализ геометрии через FreeCAD для распознавания элементов"""
