@@ -1,216 +1,310 @@
-# CNCera - AI-Powered 3D Analysis & G-code Generation
+# 🚀 CNCera - AI-Powered CNC Analysis & G-code Generation
 
-Современная веб-система для анализа 3D моделей и генерации G-кода с поддержкой ИИ.
+Современная система анализа 3D моделей и генерации G-кода с поддержкой искусственного интеллекта. Разделенная архитектура обеспечивает масштабируемость и простоту разработки.
 
-## ✨ Новые возможности
+## ✨ Возможности
 
 ### 🤖 ИИ Интеграция
-- **ИИ Чат-консультант**: Задавайте вопросы о CNC обработке, получайте экспертные советы
-- **ИИ Анализ детали**: Автоматический анализ геометрии с рекомендациями по обработке
-- **ИИ Генерация параметров**: Умный подбор режимов резания на основе геометрии детали
+- **ИИ Чат-консультант** - Экспертные советы по CNC обработке
+- **ИИ Анализ детали** - Автоматические рекомендации по стратегии обработки
+- **ИИ Генерация параметров** - Умный подбор режимов резания
 
 ### 📊 Анализ и визуализация
-- Загрузка STEP/STP/STL файлов
-- 3D визуализация с WebGL (Three.js)
-- Анализ геометрии и сложности сетки
-- PNG превью как резервный вариант
+- **3D Просмотрщик** - WebGL визуализация с Three.js
+- **Поддержка форматов** - STEP/STP (через FreeCAD) и STL
+- **Анализ геометрии** - Размеры, сложность, bounding box
 
 ### ⚙️ Генерация G-кода
-- Поддержка контроллеров: Fanuc, Siemens, Heidenhain, GSK, Mazak
-- Различные стратегии обработки: фрезерование, черновая/чистовая, waterline
-- Настройка инструментов и режимов резания
-- Припуски и координатные системы
+- **5 контроллеров** - Fanuc, Siemens, Heidenhain, GSK, Mazak
+- **Различные стратегии** - Черновая, чистовая, waterline
+- **CAM алгоритмы** - Raster, marching squares
 
-## 🚀 Установка
+## 🏗️ Архитектура
 
-### Предварительные требования
-
-1. **Python 3.8+**
-2. **FreeCAD** (для конвертации STEP в STL)
-3. **OpenAI API ключ** (для ИИ функций)
-
-### Установка зависимостей
-
-```bash
-pip install -r requirements.txt
+```
+CNCera/
+├── backend/                 # 🐍 Python Flask API
+│   ├── app.py              # Основной сервер
+│   ├── routes/             # API эндпоинты
+│   ├── services/           # Бизнес-логика (AI, FreeCAD, G-code)
+│   └── utils/              # Утилиты и валидация
+│
+├── frontend/               # 🌐 JavaScript Frontend
+│   ├── src/               # Исходный код
+│   ├── components/        # UI компоненты
+│   └── services/          # API клиент
+│
+├── start_backend.py       # 🐍 Запуск backend
+├── start_frontend.py      # 🌐 Запуск frontend  
+└── start_all.py          # 🚀 Запуск всего стека
 ```
 
-### Настройка FreeCAD
+## 🚀 Быстрый старт
+
+### Вариант 1: Запуск всего стека одной командой
+
+```bash
+# Клонируем репозиторий
+git clone <repository-url>
+cd cncera
+
+# Запускаем все (backend + frontend)
+python start_all.py
+```
+
+Откройте браузер: **http://127.0.0.1:3000**
+
+### Вариант 2: Раздельный запуск
+
+#### Backend (API Server)
+```bash
+# Запуск backend сервера
+python start_backend.py
+```
+Backend API: **http://127.0.0.1:5000**
+
+#### Frontend (Web App)  
+```bash
+# Запуск frontend приложения
+python start_frontend.py
+```
+Frontend: **http://127.0.0.1:3000**
+
+## 📋 Требования
+
+### Системные требования
+- **Python 3.8+**
+- **Node.js 16+** (для frontend)
+- **FreeCAD** (для STEP файлов)
+
+### ИИ функции (опционально)
+- **OpenAI API ключ** - для ИИ консультанта и анализа
+
+## ⚙️ Настройка
+
+### 1. Backend Configuration
+
+```bash
+cd backend
+cp .env.example .env
+```
+
+Отредактируйте `.env`:
+```bash
+# ИИ функции
+OPENAI_API_KEY=your-openai-api-key-here
+
+# FreeCAD (для STEP файлов)
+FREECADCMD_PATH=/path/to/FreeCADCmd
+
+# Flask настройки
+FLASK_ENV=development
+SECRET_KEY=your-secret-key
+```
+
+### 2. Frontend Configuration
+
+```bash
+cd frontend  
+cp .env.example .env
+```
+
+### 3. FreeCAD Setup
 
 **Windows:**
-```bash
-# Добавьте путь к FreeCAD в PATH или установите переменную
+```cmd
 set FREECADCMD_PATH="C:\Program Files\FreeCAD 0.21\bin\FreeCADCmd.exe"
 ```
 
 **Linux:**
 ```bash
-sudo apt-get install freecad-python3
-# или
+sudo apt-get install freecad
 export FREECADCMD_PATH="/usr/bin/FreeCADCmd"
 ```
 
 **macOS:**
 ```bash
-# Установите FreeCAD через Homebrew
 brew install freecad
 ```
 
-### Настройка OpenAI API
+### 4. OpenAI API Key
 
-Получите API ключ на [OpenAI Platform](https://platform.openai.com/api-keys) и установите:
+1. Получите ключ на [OpenAI Platform](https://platform.openai.com/api-keys)
+2. Добавьте в `.env` файл backend или экспортируйте:
 
 ```bash
 export OPENAI_API_KEY="your-api-key-here"
 ```
 
-Или создайте файл `.env`:
-```
-OPENAI_API_KEY=your-api-key-here
-```
-
-## 🏃‍♂️ Запуск
-
-```bash
-python main_app.py
-```
-
-Откройте браузер: http://127.0.0.1:5000
-
 ## 🎯 Использование
 
 ### 1. Загрузка файла
-- Выберите STEP, STP или STL файл
-- Настройте параметры конвертации (LinearDeflection, AngularDeflection)
+- Выберите STEP/STP или STL файл
+- Настройте параметры конвертации
 - Нажмите "Анализировать"
 
-### 2. ИИ Анализ
-- После загрузки нажмите "ИИ Анализ" для получения рекомендаций
-- ИИ проанализирует геометрию и предложит стратегию обработки
+### 2. ИИ Анализ  
+- После загрузки нажмите "ИИ Анализ"
+- Получите рекомендации по обработке
 
 ### 3. ИИ Чат
-- Используйте чат справа для консультаций
-- Примеры вопросов:
-  - "Какие параметры для фрезерования алюминия?"
-  - "Как выбрать скорость шпинделя для стали?"
-  - "Объясни стратегию waterline обработки"
+- Задавайте вопросы в чате справа
+- Примеры: "Какие параметры для алюминия?", "Объясни waterline"
 
-### 4. ИИ Генерация параметров
+### 4. ИИ Параметры
 - Опишите требования к обработке
 - ИИ подберет оптимальные параметры
-- Нажмите "Применить параметры" для автозаполнения формы
+- Примените их одним кликом
 
 ### 5. Генерация G-кода
-- Выберите контроллер и тип обработки
+- Выберите контроллер и операцию
 - Настройте параметры инструмента
-- Нажмите "Сгенерировать G-код"
+- Сгенерируйте G-код
 
-## 🏗️ Архитектура
+## 📡 API Документация
 
-```
-├── main_app.py          # Основное приложение с ИИ
-├── gcode_functions.py   # CAM алгоритмы и геометрия
-├── templates.py         # HTML шаблон с ИИ интерфейсом
-├── requirements.txt     # Зависимости Python
-├── temp/               # Временные файлы
-├── models/             # STL модели и PNG превью
-└── static/             # Статические файлы
+### Health Check
+```http
+GET /api/health
 ```
 
-### Ключевые компоненты
-
-- **ИИ модуль**: OpenAI GPT-4 для анализа и консультаций
-- **CAM движок**: Алгоритмы трассировки и waterline
-- **3D рендеринг**: Three.js + fallback на matplotlib
-- **Мульти-контроллер**: Поддержка разных систем ЧПУ
-
-## 🔧 Настройка
-
-### Переменные окружения
-
-```bash
-OPENAI_API_KEY=your-openai-key
-FREECADCMD_PATH=/path/to/FreeCADCmd
-PYTHONIOENCODING=utf-8
+### Загрузка файла
+```http
+POST /api/upload
+Content-Type: multipart/form-data
 ```
 
-### Настройки приложения
-
-В `main_app.py`:
-```python
-# Лимит загрузки файлов
-app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100MB
-
-# Максимальные точки для CAM
-MAX_POINTS = 40000
-```
-
-## 📝 Примеры использования
-
-### ИИ Консультации
-```
-Пользователь: "Какой инструмент лучше для чистовой обработки алюминия?"
-ИИ: "Для чистовой обработки алюминия рекомендую:
-- Концевые фрезы с 2-3 зубьями
-- Диаметр 6-12мм в зависимости от детали
-- Скорость шпинделя 8000-15000 об/мин
-- Подача 800-1500 мм/мин
-- Обязательно СОЖ для предотвращения налипания"
-```
-
-### ИИ Анализ детали
-```json
+### ИИ Чат
+```http
+POST /api/ai/chat
 {
-  "machining_strategy": "Черновая + чистовая обработка",
-  "recommended_tools": ["Фреза 6мм", "Фреза 3мм чистовая"],
-  "cutting_parameters": {
-    "roughing": {"feed": 800, "spindle": 8000},
-    "finishing": {"feed": 400, "spindle": 12000}
-  },
-  "estimated_time": "45 минут"
+  "message": "Ваш вопрос",
+  "session_id": "session_123"
 }
 ```
 
-## 🐛 Устранение неполадок
+### Генерация G-кода
+```http
+POST /api/gcode/generate
+{
+  "model_path": "/api/models/model.stl",
+  "controller": "fanuc",
+  "tool_diam": 3.0,
+  "feed": 300.0
+}
+```
+
+Полная документация API: **http://127.0.0.1:5000/api/info**
+
+## 🛠️ Разработка
+
+### Backend Development
+```bash
+cd backend
+pip install -r requirements.txt
+FLASK_ENV=development python run.py
+```
+
+### Frontend Development  
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+### Тестирование API
+```bash
+curl http://127.0.0.1:5000/api/health
+curl -X POST -F "file=@test.stl" http://127.0.0.1:5000/api/upload
+```
+
+## 🐳 Docker
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+services:
+  backend:
+    build: ./backend
+    ports: ["5000:5000"]
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    
+  frontend:
+    build: ./frontend  
+    ports: ["3000:80"]
+    depends_on: [backend]
+```
+
+```bash
+docker-compose up -d
+```
+
+## 🔧 Устранение неполадок
+
+### Backend не запускается
+```bash
+# Проверьте зависимости
+cd backend && pip install -r requirements.txt
+
+# Проверьте порт
+lsof -i :5000
+```
+
+### Frontend не подключается к Backend
+```bash
+# Проверьте CORS настройки в backend/app.py
+# Убедитесь что backend запущен на порту 5000
+curl http://127.0.0.1:5000/api/health
+```
 
 ### FreeCAD не найден
 ```bash
-# Проверьте установку
-FreeCADCmd --version
+# Linux
+sudo apt-get install freecad
+which FreeCADCmd
 
-# Установите путь явно
-export FREECADCMD_PATH="/usr/bin/FreeCADCmd"
+# Windows - установите FreeCAD и добавьте в PATH
 ```
 
 ### ИИ не работает
-- Проверьте API ключ OpenAI
-- Убедитесь в наличии интернет-соединения
-- Проверьте баланс на аккаунте OpenAI
+```bash
+# Проверьте API ключ
+echo $OPENAI_API_KEY
 
-### 3D модель не отображается
-- Проверьте поддержку WebGL в браузере
-- Используйте современный браузер (Chrome, Firefox, Safari)
-- PNG превью должно работать как резерв
+# Проверьте баланс на OpenAI
+```
+
+## 📈 Производительность
+
+- **Backend**: Flask + Gunicorn для продакшена
+- **Frontend**: Webpack с code splitting
+- **3D Viewer**: WebGL с оптимизацией
+- **Файлы**: Автоматическая очистка временных файлов
 
 ## 🤝 Вклад в проект
 
 1. Fork репозиторий
 2. Создайте feature branch
-3. Сделайте изменения
-4. Добавьте тесты
-5. Создайте Pull Request
+3. Backend: следуйте PEP 8
+4. Frontend: используйте ESLint  
+5. Добавьте тесты
+6. Создайте Pull Request
 
 ## 📄 Лицензия
 
-MIT License - см. LICENSE файл
+MIT License
 
 ## 🙏 Благодарности
 
-- OpenAI за GPT-4 API
-- FreeCAD за STEP/STL конвертацию
-- Three.js за 3D визуализацию
-- Flask за веб-фреймворк
+- **OpenAI** - GPT-4 API для ИИ функций
+- **FreeCAD** - STEP/STL конвертация
+- **Three.js** - 3D визуализация
+- **Flask** - Backend framework
+- **Webpack** - Frontend сборка
 
 ---
 
-**Сделано с ❤️ для CNC сообщества**
+**🎯 Сделано с ❤️ для CNC сообщества**
+
+**🚀 Готово к использованию из коробки!**

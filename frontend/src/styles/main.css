@@ -1,0 +1,240 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom CSS for CNCera */
+
+@layer base {
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+  
+  body {
+    @apply bg-gray-900 text-gray-100;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+  
+  * {
+    box-sizing: border-box;
+  }
+}
+
+@layer components {
+  /* Button Components */
+  .btn-primary {
+    @apply bg-cnc-blue text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition duration-200 font-medium;
+  }
+  
+  .btn-secondary {
+    @apply bg-gray-700 text-gray-100 px-4 py-2 rounded-lg hover:bg-gray-600 transition duration-200 font-medium;
+  }
+  
+  .btn-success {
+    @apply bg-cnc-green text-white px-4 py-2 rounded-lg hover:bg-green-700 transition duration-200 font-medium;
+  }
+  
+  .btn-danger {
+    @apply bg-cnc-red text-white px-4 py-2 rounded-lg hover:bg-red-700 transition duration-200 font-medium;
+  }
+  
+  .btn-ai {
+    @apply bg-cnc-purple text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition duration-200 font-medium;
+  }
+  
+  /* Input Components */
+  .input-field {
+    @apply w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition duration-200;
+  }
+  
+  .select-field {
+    @apply w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-transparent transition duration-200;
+  }
+  
+  /* Card Components */
+  .card {
+    @apply bg-gray-800 p-6 rounded-lg shadow-lg;
+  }
+  
+  .card-header {
+    @apply text-xl font-semibold mb-4 flex items-center;
+  }
+  
+  /* Chat Components */
+  .chat-container {
+    @apply max-h-96 overflow-y-auto bg-gray-900 rounded-lg p-4;
+  }
+  
+  .chat-message {
+    @apply mb-3 p-3 rounded-lg;
+  }
+  
+  .chat-message.user {
+    @apply bg-cnc-blue text-white ml-8;
+  }
+  
+  .chat-message.assistant {
+    @apply bg-gray-700 text-gray-100 mr-8;
+  }
+  
+  .chat-message.system {
+    @apply bg-gray-600 text-gray-300 text-sm text-center;
+  }
+  
+  /* Loading Components */
+  .loading-spinner {
+    @apply inline-block w-4 h-4 border-2 border-gray-300 border-t-blue-500 rounded-full animate-spin;
+  }
+  
+  .loading-dots::after {
+    content: '';
+    animation: dots 1.5s steps(4, end) infinite;
+  }
+  
+  /* Tooltip Components */
+  .tooltip {
+    @apply relative;
+  }
+  
+  .tooltip:hover::after {
+    content: attr(data-tooltip);
+    @apply absolute z-10 bottom-full left-1/2 transform -translate-x-1/2 bg-gray-800 text-gray-100 px-2 py-1 rounded text-sm whitespace-nowrap;
+  }
+  
+  /* Progress Components */
+  .progress-bar {
+    @apply w-full bg-gray-700 rounded-full h-2;
+  }
+  
+  .progress-fill {
+    @apply bg-cnc-blue h-2 rounded-full transition-all duration-300;
+  }
+  
+  /* Grid Components */
+  .grid-responsive {
+    @apply grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4;
+  }
+  
+  /* File Upload Components */
+  .file-upload-area {
+    @apply border-2 border-dashed border-gray-600 rounded-lg p-8 text-center hover:border-blue-500 transition-colors duration-200 cursor-pointer;
+  }
+  
+  .file-upload-area.dragover {
+    @apply border-blue-500 bg-blue-500 bg-opacity-10;
+  }
+  
+  /* Viewer Components */
+  .viewer-container {
+    @apply bg-cnc-dark rounded-lg overflow-hidden relative;
+    min-height: 400px;
+  }
+  
+  .viewer-controls {
+    @apply absolute top-4 right-4 flex flex-col space-y-2 z-10;
+  }
+  
+  .viewer-control-btn {
+    @apply bg-gray-800 bg-opacity-80 text-gray-100 p-2 rounded-lg hover:bg-opacity-100 transition-all duration-200;
+  }
+}
+
+@layer utilities {
+  /* Animation utilities */
+  @keyframes dots {
+    0%, 20% { 
+      color: rgba(0,0,0,0); 
+      text-shadow: .25em 0 0 rgba(0,0,0,0), .5em 0 0 rgba(0,0,0,0);
+    }
+    40% { 
+      color: white; 
+      text-shadow: .25em 0 0 rgba(0,0,0,0), .5em 0 0 rgba(0,0,0,0);
+    }
+    60% { 
+      text-shadow: .25em 0 0 white, .5em 0 0 rgba(0,0,0,0);
+    }
+    80%, 100% { 
+      text-shadow: .25em 0 0 white, .5em 0 0 white;
+    }
+  }
+  
+  /* Scrollbar styling */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #4b5563 #1f2937;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-track {
+    @apply bg-gray-800;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply bg-gray-600 rounded-full;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-500;
+  }
+  
+  /* Text utilities */
+  .text-shadow {
+    text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+  }
+  
+  .text-gradient {
+    background: linear-gradient(45deg, #2563eb, #7c3aed);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  
+  /* Glass morphism */
+  .glass {
+    @apply bg-white bg-opacity-10 backdrop-blur-sm border border-white border-opacity-20;
+  }
+  
+  /* Responsive utilities */
+  .container-responsive {
+    @apply max-w-7xl mx-auto px-4 sm:px-6 lg:px-8;
+  }
+}
+
+/* Custom scrollbar for webkit browsers */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-gray-800;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-600 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-500;
+}
+
+/* Focus styles */
+*:focus {
+  outline: none;
+}
+
+.focus-ring:focus {
+  @apply ring-2 ring-blue-500 ring-offset-2 ring-offset-gray-900;
+}
+
+/* Print styles */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  
+  body {
+    @apply text-black bg-white;
+  }
+}

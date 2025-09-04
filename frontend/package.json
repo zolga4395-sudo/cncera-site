@@ -1,0 +1,39 @@
+{
+  "name": "cncera-frontend",
+  "version": "1.0.0",
+  "description": "CNCera Frontend - AI-Powered CNC Analysis & G-code Generation",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "webpack serve --mode development",
+    "build": "webpack --mode production",
+    "dev": "webpack serve --mode development --open",
+    "lint": "eslint src/",
+    "test": "jest"
+  },
+  "keywords": ["cnc", "gcode", "ai", "3d", "manufacturing"],
+  "author": "CNCera Team",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "three": "^0.158.0",
+    "tailwindcss": "^3.3.6"
+  },
+  "devDependencies": {
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^4.15.1",
+    "html-webpack-plugin": "^5.5.3",
+    "css-loader": "^6.8.1",
+    "style-loader": "^3.3.3",
+    "postcss": "^8.4.32",
+    "postcss-loader": "^7.3.3",
+    "autoprefixer": "^10.4.16",
+    "eslint": "^8.54.0",
+    "jest": "^29.7.0"
+  },
+  "browserslist": [
+    "> 1%",
+    "last 2 versions",
+    "not dead"
+  ]
+}
