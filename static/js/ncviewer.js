@@ -241,3 +241,33 @@ class NCViewer {
 
 // Export for global use
 window.NCViewer = NCViewer;
+
+// Global function for G-code rendering
+window.renderGcode = function(gcodeText) {
+    console.log("renderGcode called with G-code length:", gcodeText ? gcodeText.length : 0);
+    
+    // Find the NC viewer container
+    const container = document.getElementById('ncviewer');
+    if (!container) {
+        console.warn("NC viewer container not found");
+        return;
+    }
+    
+    // Initialize viewer if not already done
+    if (!window.ncViewerInstance) {
+        try {
+            window.ncViewerInstance = new NCViewer(container);
+        } catch (error) {
+            console.warn("Failed to initialize NC Viewer:", error);
+            container.innerHTML = '<div class="ncviewer-placeholder">NC Viewer failed to initialize: ' + error.message + '</div>';
+            return;
+        }
+    }
+    
+    // Load G-code
+    if (window.ncViewerInstance && window.ncViewerInstance.loadGcode) {
+        window.ncViewerInstance.loadGcode(gcodeText);
+    } else {
+        console.warn("NC Viewer instance not available");
+    }
+};

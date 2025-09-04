@@ -507,7 +507,13 @@ function showGcodePreview(gcode, validation) {
     }
     
     // Initialize NC Viewer if available
-    if (window.NCViewer && ncviewer) {
+    if (window.renderGcode) {
+        try {
+            window.renderGcode(gcode);
+        } catch (error) {
+            console.warn('NC Viewer failed to load:', error);
+        }
+    } else if (window.NCViewer && ncviewer) {
         try {
             const viewer = new NCViewer(ncviewer);
             viewer.loadGcode(gcode);

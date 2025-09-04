@@ -497,8 +497,15 @@ DATA = BASE / "data"
 DATA.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".step", ".stp", ".stl"}
-app = Flask(__name__)
+
+# Initialize Flask with explicit static configuration
+app = Flask(
+    __name__,
+    static_folder=str(BASE / "static"),
+    static_url_path="/static"
+)
 app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100MB limit
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 3600
 
 # ============================================================================
 # CACHING FOR FREECADCMD
@@ -527,9 +534,19 @@ API_ENDPOINTS = {
 
 @app.errorhandler(Exception)
 def handle_error(e):
+    # Handle static file 404s without escalating to 500
+    if hasattr(e, 'code') and e.code == 404 and request.path.startswith("/static/"):
+        logger.warning("Static file not found: %s", request.path)
+        return f"Static file not found: {request.path}", 404
+    
+    # Log other exceptions as errors
     logger.error("Uncaught exception: %s", e, exc_info=True)
+    
+    # Return JSON for API endpoints
     if request.path in API_ENDPOINTS:
         return jsonify({"success": False, "error": f"Critical error: {e.__class__.__name__}: {str(e)}"}), 200
+    
+    # Return HTML error page for UI routes
     error_html = f"""
     <!DOCTYPE html>
     <html>
@@ -541,6 +558,40 @@ def handle_error(e):
     <p>An unexpected error occurred. Please try again later.</p>
     <p>Error: {str(e)}</p></div></body></html>"""
     return error_html, 500
+
+# ============================================================================
+# STATIC FILE MANAGEMENT
+# ============================================================================
+
+def ensure_static_files():
+    """Ensure required static files exist, create placeholders if missing"""
+    required_files = [
+        ("static/js/app.js", """// CNCera App JS - Placeholder
+console.log("CNCera App JS loaded (placeholder)");
+// This is a placeholder file created automatically
+// Replace with actual app.js content"""),
+        ("static/js/ncviewer.js", """// NC Viewer - Placeholder
+console.log("NC Viewer JS loaded (placeholder)");
+window.NCViewer = class NCViewer {
+    constructor(container) {
+        console.log("NC Viewer placeholder initialized");
+        container.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">NC Viewer placeholder - WebGL not available</div>';
+    }
+    loadGcode(gcode) {
+        console.log("G-code loaded in placeholder viewer");
+    }
+};""")
+    ]
+    
+    for file_path, content in required_files:
+        full_path = BASE / file_path
+        if not full_path.exists():
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text(content, encoding="utf-8")
+            logger.warning("Missing static asset created: %s", file_path)
+
+# Ensure static files exist on startup
+ensure_static_files()
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -1498,6 +1549,7 @@ def index():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>CNCera - 3D Analysis & G-code Generation</title>
         <script src="https://cdn.tailwindcss.com"></script>
+        <link rel="stylesheet" href="/static/ncviewer/ncviewer.css">
         <style>
             #viewer { min-height: 400px; }
             #log, #glog { white-space: pre-wrap; }
@@ -1716,7 +1768,7 @@ def index():
             <!-- G-code Preview Section -->
             <div id="gcode-preview" class="bg-gray-800 p-6 rounded-lg shadow-lg" style="display: none;">
                 <h2 class="text-xl font-semibold mb-4">Предпросмотр G-кода</h2>
-                <div id="ncviewer" class="bg-gray-900 rounded-lg" style="height: 400px;"></div>
+                <div id="ncviewer" class="ncviewer-container"></div>
                 <div id="gcode-content" class="mt-4"></div>
             </div>
         </div>
@@ -1734,7 +1786,17 @@ def favicon():
 
 @app.route("/static/<path:filename>")
 def serve_static(filename: str):
-    return send_from_directory(str(STATIC), filename)
+    """Serve static files with fallback for Windows/OneDrive paths"""
+    try:
+        return send_from_directory(str(STATIC), filename)
+    except Exception as e:
+        # Try fallback with BASE path
+        try:
+            static_dir = BASE / "static"
+            return send_from_directory(str(static_dir), filename)
+        except Exception as e2:
+            logger.warning("Static file not found: %s - %s", filename, str(e2))
+            return f"Static file not found: {filename}", 404
 
 @app.route("/models/<path:filename>")
 def serve_models(filename: str):
@@ -1919,5 +1981,37 @@ def download_gcode():
 # ============================================================================
 
 if __name__ == "__main__":
+    # Startup diagnostics
     logger.info("Starting CNCera server...")
+    logger.info("BASE path: %s", BASE)
+    logger.info("Static folder: %s", app.static_folder)
+    logger.info("Static URL path: %s", app.static_url_path)
+    
+    # Check required static files
+    required_assets = [
+        "static/js/app.js",
+        "static/js/ncviewer.js"
+    ]
+    
+    for asset in required_assets:
+        asset_path = BASE / asset
+        if asset_path.exists():
+            logger.info("✓ Found: %s", asset)
+        else:
+            logger.warning("✗ Missing: %s", asset)
+    
+    # Check if UI template references static assets correctly
+    try:
+        ui_path = Path("ui/index.html")
+        if ui_path.exists():
+            ui_content = ui_path.read_text(encoding="utf-8")
+            script_tags = []
+            for line in ui_content.split('\n'):
+                if 'src=' in line and 'static' in line:
+                    script_tags.append(line.strip())
+            if script_tags:
+                logger.info("Found script tags in UI: %s", script_tags)
+    except Exception as e:
+        logger.warning("Could not check UI template: %s", e)
+    
     app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)
