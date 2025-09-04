@@ -564,31 +564,21 @@ def handle_error(e):
 # ============================================================================
 
 def ensure_static_files():
-    """Ensure required static files exist, create placeholders if missing"""
+    """Ensure required static files exist"""
     required_files = [
-        ("static/js/app.js", """// CNCera App JS - Placeholder
-console.log("CNCera App JS loaded (placeholder)");
-// This is a placeholder file created automatically
-// Replace with actual app.js content"""),
-        ("static/js/ncviewer.js", """// NC Viewer - Placeholder
-console.log("NC Viewer JS loaded (placeholder)");
-window.NCViewer = class NCViewer {
-    constructor(container) {
-        console.log("NC Viewer placeholder initialized");
-        container.innerHTML = '<div style="padding: 20px; text-align: center; color: #666;">NC Viewer placeholder - WebGL not available</div>';
-    }
-    loadGcode(gcode) {
-        console.log("G-code loaded in placeholder viewer");
-    }
-};""")
+        "static/js/app.js",
+        "static/js/ncviewer.js",
+        "static/css/app.css",
+        "static/ncviewer/ncviewer.css",
+        "static/ncviewer/three.min.js",
+        "static/ncviewer/OrbitControls.js",
+        "static/ncviewer/STLLoader.js"
     ]
     
-    for file_path, content in required_files:
+    for file_path in required_files:
         full_path = BASE / file_path
         if not full_path.exists():
-            full_path.parent.mkdir(parents=True, exist_ok=True)
-            full_path.write_text(content, encoding="utf-8")
-            logger.warning("Missing static asset created: %s", file_path)
+            logger.warning("Missing static asset: %s", file_path)
 
 # Ensure static files exist on startup
 ensure_static_files()
@@ -1541,14 +1531,16 @@ def index():
     except Exception as e:
         logger.warning(f"Failed to read ui/index.html: {e}")
     
-    fallback_html = """
+    # Fallback HTML if ui/index.html is not available
+    # Old fallback HTML removed - using simple fallback below
     <!DOCTYPE html>
     <html lang="ru">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>CNCera - 3D Analysis & G-code Generation</title>
-        <script src="https://cdn.tailwindcss.com"></script>
+        <!-- Tailwind CDN removed - using local CSS -->
+        <link rel="stylesheet" href="/static/css/app.css">
         <link rel="stylesheet" href="/static/ncviewer/ncviewer.css">
         <style>
             #viewer { min-height: 400px; }
@@ -1778,7 +1770,37 @@ def index():
     </body>
     </html>
     """
-    return fallback_html
+    # Simple fallback if ui/index.html is not available
+    return """
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>CNCera - 3D Analysis & G-code Generation</title>
+        <link rel="stylesheet" href="/static/css/app.css">
+    </head>
+    <body class="bg-gray-900 text-gray-100 font-sans p-6">
+        <div class="container">
+            <div class="card">
+                <h1 class="text-2xl font-semibold mb-4">CNCera - 3D Analysis & G-code Generation</h1>
+                <p class="text-gray-400 mb-4">UI template not found. Please ensure ui/index.html exists.</p>
+                <div class="mb-4">
+                    <h2 class="text-lg font-medium mb-2">Available API Endpoints:</h2>
+                    <ul class="list-disc list-inside text-sm text-gray-300">
+                        <li>POST /upload - Upload and analyze 3D files</li>
+                        <li>POST /generate_gcode - Generate G-code</li>
+                        <li>GET /materials - Get materials list</li>
+                        <li>GET /tools - Get tools list</li>
+                        <li>GET /postprocessors - Get postprocessors list</li>
+                        <li>GET /healthz - Health check</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
 
 @app.route("/favicon.ico")
 def favicon():

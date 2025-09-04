@@ -1,118 +1,320 @@
-// Simple NC Viewer for G-code visualization
-class NCViewer {
-    constructor(container) {
-        this.container = container;
-        this.scene = null;
-        this.camera = null;
-        this.renderer = null;
-        this.controls = null;
-        this.toolpath = null;
-        this.animationId = null;
-        
-        this.init();
-    }
+/**
+ * NC Viewer - 3D G-code and STL visualization
+ * Uses three.js with fallback to PNG preview
+ */
+
+window.NCV = (function() {
+    'use strict';
     
-    init() {
-        if (!window.THREE) {
-            this.container.innerHTML = '<div class="text-gray-400 p-8">Three.js не загружен</div>';
-            return;
-        }
-        
-        // Create scene
-        this.scene = new THREE.Scene();
-        this.scene.background = new THREE.Color(0x0a0a0a);
-        
-        // Create camera
-        const width = this.container.clientWidth;
-        const height = this.container.clientHeight;
-        this.camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
-        this.camera.position.set(50, 50, 50);
-        
-        // Create renderer
-        this.renderer = new THREE.WebGLRenderer({ antialias: true });
-        this.renderer.setSize(width, height);
-        this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-        this.container.appendChild(this.renderer.domElement);
-        
-        // Add lighting
-        const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
-        this.scene.add(ambientLight);
-        
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        directionalLight.position.set(50, 50, 50);
-        directionalLight.castShadow = true;
-        directionalLight.shadow.mapSize.width = 2048;
-        directionalLight.shadow.mapSize.height = 2048;
-        this.scene.add(directionalLight);
-        
-        // Add controls if available
-        if (window.THREE.OrbitControls) {
-            this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
-            this.controls.enableDamping = true;
-            this.controls.dampingFactor = 0.1;
-        }
-        
-        // Add coordinate axes
-        this.addAxes();
-        
-        // Start animation loop
-        this.animate();
-        
-        // Handle window resize
-        window.addEventListener('resize', () => this.onWindowResize());
-    }
+    let scene, camera, renderer, controls;
+    let container, isInitialized = false;
+    let currentGcode = null;
+    let currentSTL = null;
+    let gcodeGroup, stlGroup;
+    let originMarker, gridHelper, axesHelper;
     
-    addAxes() {
-        const axesHelper = new THREE.AxesHelper(20);
-        this.scene.add(axesHelper);
-        
-        // Add axis labels
-        const loader = new THREE.FontLoader();
-        // For now, just add simple geometry as labels
-        const xLabel = new THREE.Mesh(
-            new THREE.PlaneGeometry(2, 2),
-            new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.8 })
-        );
-        xLabel.position.set(22, 0, 0);
-        this.scene.add(xLabel);
-        
-        const yLabel = new THREE.Mesh(
-            new THREE.PlaneGeometry(2, 2),
-            new THREE.MeshBasicMaterial({ color: 0x00ff00, transparent: true, opacity: 0.8 })
-        );
-        yLabel.position.set(0, 22, 0);
-        this.scene.add(yLabel);
-        
-        const zLabel = new THREE.Mesh(
-            new THREE.PlaneGeometry(2, 2),
-            new THREE.MeshBasicMaterial({ color: 0x0000ff, transparent: true, opacity: 0.8 })
-        );
-        zLabel.position.set(0, 0, 22);
-        this.scene.add(zLabel);
-    }
+    // Configuration
+    const config = {
+        cameraDistance: 200,
+        backgroundColor: 0x0a0a0a,
+        gridSize: 100,
+        gridDivisions: 20,
+        axisLength: 50,
+        originMarkerSize: 2
+    };
     
-    loadGcode(gcode) {
-        // Clear existing toolpath
-        if (this.toolpath) {
-            this.scene.remove(this.toolpath);
-        }
-        
-        // Parse G-code and create toolpath
-        const toolpath = this.parseGcode(gcode);
-        if (toolpath) {
-            this.scene.add(toolpath);
-            this.toolpath = toolpath;
+    /**
+     * Initialize the NC Viewer
+     * @param {string} containerSelector - CSS selector for container
+     * @returns {boolean} - Success status
+     */
+    function init(containerSelector) {
+        try {
+            container = document.querySelector(containerSelector);
+            if (!container) {
+                console.warn('NC Viewer: Container not found:', containerSelector);
+                return false;
+            }
             
-            // Fit camera to toolpath
-            this.fitCameraToToolpath(toolpath);
+            // Check for three.js availability
+            if (typeof THREE === 'undefined') {
+                showFallback('Three.js not available');
+                return false;
+            }
+            
+            // Check for required three.js components
+            if (!THREE.OrbitControls || !THREE.STLLoader) {
+                showFallback('Three.js components not available');
+                return false;
+            }
+            
+            // Check for WebGL support
+            if (!isWebGLSupported()) {
+                showFallback('WebGL not supported');
+                return false;
+            }
+            
+            setupScene();
+            setupCamera();
+            setupRenderer();
+            setupControls();
+            setupLighting();
+            setupHelpers();
+            setupEventListeners();
+            
+            isInitialized = true;
+            console.log('NC Viewer initialized successfully');
+            return true;
+            
+        } catch (error) {
+            console.warn('NC Viewer initialization failed:', error);
+            showFallback('Initialization failed: ' + error.message);
+            return false;
         }
     }
     
-    parseGcode(gcode) {
-        const lines = gcode.split('\n');
-        const points = [];
-        let currentX = 0, currentY = 0, currentZ = 0;
+    /**
+     * Setup the three.js scene
+     */
+    function setupScene() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(config.backgroundColor);
+        
+        // Create groups for organization
+        gcodeGroup = new THREE.Group();
+        stlGroup = new THREE.Group();
+        scene.add(gcodeGroup);
+        scene.add(stlGroup);
+    }
+    
+    /**
+     * Setup the camera
+     */
+    function setupCamera() {
+        const aspect = container.clientWidth / container.clientHeight;
+        camera = new THREE.PerspectiveCamera(75, aspect, 0.1, 10000);
+        camera.position.set(config.cameraDistance, config.cameraDistance * 0.8, config.cameraDistance * 0.8);
+        camera.lookAt(0, 0, 0);
+    }
+    
+    /**
+     * Setup the renderer
+     */
+    function setupRenderer() {
+        renderer = new THREE.WebGLRenderer({ 
+            antialias: true,
+            alpha: false
+        });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        
+        container.appendChild(renderer.domElement);
+    }
+    
+    /**
+     * Setup orbit controls
+     */
+    function setupControls() {
+        controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.1;
+        controls.minPolarAngle = 0;
+        controls.maxPolarAngle = Math.PI;
+        controls.minAzimuthAngle = -Infinity;
+        controls.maxAzimuthAngle = Infinity;
+        controls.enablePan = true;
+        controls.enableZoom = true;
+        controls.enableRotate = true;
+        controls.maxDistance = 1000;
+        controls.minDistance = 10;
+    }
+    
+    /**
+     * Setup lighting
+     */
+    function setupLighting() {
+        // Ambient light
+        const ambientLight = new THREE.AmbientLight(0x404040, 0.3);
+        scene.add(ambientLight);
+        
+        // Directional light 1
+        const directionalLight1 = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight1.position.set(1, 1, 1);
+        directionalLight1.castShadow = true;
+        directionalLight1.shadow.mapSize.width = 2048;
+        directionalLight1.shadow.mapSize.height = 2048;
+        scene.add(directionalLight1);
+        
+        // Directional light 2
+        const directionalLight2 = new THREE.DirectionalLight(0xffffff, 0.5);
+        directionalLight2.position.set(-1, -1, -1);
+        scene.add(directionalLight2);
+    }
+    
+    /**
+     * Setup helper objects
+     */
+    function setupHelpers() {
+        // Grid helper
+        gridHelper = new THREE.GridHelper(config.gridSize, config.gridDivisions, 0x444444, 0x444444);
+        gridHelper.position.y = -0.01; // Slightly below origin
+        scene.add(gridHelper);
+        
+        // Axes helper
+        axesHelper = new THREE.AxesHelper(config.axisLength);
+        scene.add(axesHelper);
+        
+        // Origin marker
+        const originGeometry = new THREE.SphereGeometry(config.originMarkerSize, 16, 16);
+        const originMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+        originMarker = new THREE.Mesh(originGeometry, originMaterial);
+        originMarker.position.set(0, 0, 0);
+        scene.add(originMarker);
+    }
+    
+    /**
+     * Setup event listeners
+     */
+    function setupEventListeners() {
+        // Window resize
+        window.addEventListener('resize', onWindowResize, false);
+        
+        // Animation loop
+        animate();
+    }
+    
+    /**
+     * Animation loop
+     */
+    function animate() {
+        requestAnimationFrame(animate);
+        
+        if (controls) {
+            controls.update();
+        }
+        
+        if (renderer && scene && camera) {
+            renderer.render(scene, camera);
+        }
+    }
+    
+    /**
+     * Handle window resize
+     */
+    function onWindowResize() {
+        if (!camera || !renderer || !container) return;
+        
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+        
+        camera.aspect = width / height;
+        camera.updateProjectionMatrix();
+        renderer.setSize(width, height);
+    }
+    
+    /**
+     * Render G-code toolpath
+     * @param {string} gcodeText - G-code content
+     */
+    function renderGcode(gcodeText) {
+        if (!isInitialized) {
+            console.warn('NC Viewer not initialized');
+            return false;
+        }
+        
+        try {
+            currentGcode = gcodeText;
+            clearGcode();
+            
+            if (!gcodeText || gcodeText.trim() === '') {
+                console.warn('Empty G-code provided');
+                return false;
+            }
+            
+            const toolpath = parseGcode(gcodeText);
+            if (toolpath.length === 0) {
+                console.warn('No valid toolpath found in G-code');
+                return false;
+            }
+            
+            createToolpathVisualization(toolpath);
+            fitToView();
+            
+            console.log('G-code rendered successfully');
+            return true;
+            
+        } catch (error) {
+            console.warn('G-code rendering failed:', error);
+            return false;
+        }
+    }
+    
+    /**
+     * Render STL model
+     * @param {string|Blob} urlOrBlob - STL file URL or Blob
+     */
+    function renderSTL(urlOrBlob) {
+        if (!isInitialized) {
+            console.warn('NC Viewer not initialized');
+            return false;
+        }
+        
+        try {
+            clearSTL();
+            
+            const loader = new THREE.STLLoader();
+            loader.load(
+                urlOrBlob,
+                function(geometry) {
+                    const material = new THREE.MeshPhongMaterial({ 
+                        color: 0x88aaff,
+                        specular: 0x222222,
+                        shininess: 30
+                    });
+                    
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.castShadow = true;
+                    mesh.receiveShadow = true;
+                    
+                    // Center the model
+                    geometry.computeBoundingBox();
+                    const boundingBox = geometry.boundingBox;
+                    const center = boundingBox.getCenter(new THREE.Vector3());
+                    mesh.position.sub(center);
+                    
+                    stlGroup.add(mesh);
+                    currentSTL = mesh;
+                    
+                    fitToView();
+                    console.log('STL model loaded successfully');
+                },
+                function(progress) {
+                    console.log('STL loading progress:', (progress.loaded / progress.total * 100) + '%');
+                },
+                function(error) {
+                    console.warn('STL loading failed:', error);
+                }
+            );
+            
+            return true;
+            
+        } catch (error) {
+            console.warn('STL rendering failed:', error);
+            return false;
+        }
+    }
+    
+    /**
+     * Parse G-code and extract toolpath
+     * @param {string} gcodeText - G-code content
+     * @returns {Array} - Array of toolpath points
+     */
+    function parseGcode(gcodeText) {
+        const lines = gcodeText.split('\n');
+        const toolpath = [];
+        let currentPos = { x: 0, y: 0, z: 0 };
         let isRapid = false;
         
         for (const line of lines) {
@@ -120,154 +322,193 @@ class NCViewer {
             if (!trimmed || trimmed.startsWith('(') || trimmed.startsWith(';')) continue;
             
             // Parse G0 (rapid) and G1 (linear) moves
-            if (trimmed.includes('G0')) {
-                isRapid = true;
-            } else if (trimmed.includes('G1')) {
-                isRapid = false;
-            }
-            
-            // Extract coordinates
-            const xMatch = trimmed.match(/X(-?\d*\.?\d*)/);
-            const yMatch = trimmed.match(/Y(-?\d*\.?\d*)/);
-            const zMatch = trimmed.match(/Z(-?\d*\.?\d*)/);
-            
-            if (xMatch) currentX = parseFloat(xMatch[1]) || currentX;
-            if (yMatch) currentY = parseFloat(yMatch[1]) || currentY;
-            if (zMatch) currentZ = parseFloat(zMatch[1]) || currentZ;
-            
-            // Add point if we have coordinates
-            if (xMatch || yMatch || zMatch) {
-                points.push({
-                    x: currentX,
-                    y: currentY,
-                    z: currentZ,
+            if (trimmed.startsWith('G0') || trimmed.startsWith('G1')) {
+                isRapid = trimmed.startsWith('G0');
+                
+                const xMatch = trimmed.match(/X([+-]?\d*\.?\d+)/);
+                const yMatch = trimmed.match(/Y([+-]?\d*\.?\d+)/);
+                const zMatch = trimmed.match(/Z([+-]?\d*\.?\d+)/);
+                
+                if (xMatch) currentPos.x = parseFloat(xMatch[1]);
+                if (yMatch) currentPos.y = parseFloat(yMatch[1]);
+                if (zMatch) currentPos.z = parseFloat(zMatch[1]);
+                
+                toolpath.push({
+                    x: currentPos.x,
+                    y: currentPos.y,
+                    z: currentPos.z,
                     isRapid: isRapid
                 });
             }
         }
         
-        if (points.length < 2) return null;
+        return toolpath;
+    }
+    
+    /**
+     * Create toolpath visualization
+     * @param {Array} toolpath - Array of toolpath points
+     */
+    function createToolpathVisualization(toolpath) {
+        if (toolpath.length < 2) return;
         
-        // Create toolpath geometry
         const geometry = new THREE.BufferGeometry();
         const positions = [];
         const colors = [];
+        const indices = [];
         
-        for (let i = 0; i < points.length; i++) {
-            const point = points[i];
-            positions.push(point.x, point.y, point.z);
+        // Create line segments
+        for (let i = 0; i < toolpath.length - 1; i++) {
+            const current = toolpath[i];
+            const next = toolpath[i + 1];
             
-            // Color: red for rapid moves, green for cutting moves
-            if (point.isRapid) {
-                colors.push(1, 0, 0); // Red
-            } else {
-                colors.push(0, 1, 0); // Green
-            }
+            // Add vertices
+            positions.push(current.x, current.y, current.z);
+            positions.push(next.x, next.y, next.z);
+            
+            // Add colors (orange for rapid, blue for feed)
+            const color = current.isRapid ? new THREE.Color(0xf59e0b) : new THREE.Color(0x3b82f6);
+            colors.push(color.r, color.g, color.b);
+            colors.push(color.r, color.g, color.b);
+            
+            // Add line indices
+            indices.push(i * 2, i * 2 + 1);
         }
         
         geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
         geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-        
-        // Create line segments
-        const indices = [];
-        for (let i = 0; i < points.length - 1; i++) {
-            indices.push(i, i + 1);
-        }
         geometry.setIndex(indices);
         
-        const material = new THREE.LineBasicMaterial({
+        const material = new THREE.LineBasicMaterial({ 
             vertexColors: true,
             linewidth: 2
         });
         
-        return new THREE.LineSegments(geometry, material);
+        const toolpathMesh = new THREE.LineSegments(geometry, material);
+        gcodeGroup.add(toolpathMesh);
     }
     
-    fitCameraToToolpath(toolpath) {
-        if (!toolpath) return;
+    /**
+     * Clear G-code visualization
+     */
+    function clearGcode() {
+        if (gcodeGroup) {
+            gcodeGroup.clear();
+        }
+    }
+    
+    /**
+     * Clear STL model
+     */
+    function clearSTL() {
+        if (stlGroup) {
+            stlGroup.clear();
+        }
+        currentSTL = null;
+    }
+    
+    /**
+     * Clear all content
+     */
+    function clear() {
+        clearGcode();
+        clearSTL();
+    }
+    
+    /**
+     * Fit view to content
+     */
+    function fitToView() {
+        if (!camera || !controls) return;
         
-        const box = new THREE.Box3().setFromObject(toolpath);
+        const box = new THREE.Box3();
+        
+        // Include G-code toolpath
+        gcodeGroup.traverse(function(child) {
+            if (child.geometry) {
+                box.expandByObject(child);
+            }
+        });
+        
+        // Include STL model
+        stlGroup.traverse(function(child) {
+            if (child.geometry) {
+                box.expandByObject(child);
+            }
+        });
+        
+        if (box.isEmpty()) return;
+        
         const center = box.getCenter(new THREE.Vector3());
         const size = box.getSize(new THREE.Vector3());
         const maxDim = Math.max(size.x, size.y, size.z);
+        const distance = maxDim * 2;
         
-        // Position camera
-        this.camera.position.set(
-            center.x + maxDim * 1.5,
-            center.y + maxDim * 1.5,
-            center.z + maxDim * 1.5
+        camera.position.set(
+            center.x + distance,
+            center.y + distance * 0.8,
+            center.z + distance * 0.8
         );
-        this.camera.lookAt(center);
-        
-        if (this.controls) {
-            this.controls.target.copy(center);
-            this.controls.update();
-        }
+        camera.lookAt(center);
+        controls.target.copy(center);
+        controls.update();
     }
     
-    animate() {
-        this.animationId = requestAnimationFrame(() => this.animate());
+    /**
+     * Show fallback content
+     * @param {string} message - Fallback message
+     */
+    function showFallback(message) {
+        if (!container) return;
         
-        if (this.controls) {
-            this.controls.update();
-        }
-        
-        this.renderer.render(this.scene, this.camera);
+        container.innerHTML = `
+            <div class="ncviewer-placeholder">
+                <h3>NC Viewer Unavailable</h3>
+                <p>${message}</p>
+                <p>Falling back to PNG preview...</p>
+            </div>
+        `;
     }
     
-    onWindowResize() {
-        const width = this.container.clientWidth;
-        const height = this.container.clientHeight;
-        
-        this.camera.aspect = width / height;
-        this.camera.updateProjectionMatrix();
-        this.renderer.setSize(width, height);
-    }
-    
-    dispose() {
-        if (this.animationId) {
-            cancelAnimationFrame(this.animationId);
-        }
-        
-        if (this.renderer) {
-            this.renderer.dispose();
-        }
-        
-        if (this.container && this.renderer) {
-            this.container.removeChild(this.renderer.domElement);
-        }
-    }
-}
-
-// Export for global use
-window.NCViewer = NCViewer;
-
-// Global function for G-code rendering
-window.renderGcode = function(gcodeText) {
-    console.log("renderGcode called with G-code length:", gcodeText ? gcodeText.length : 0);
-    
-    // Find the NC viewer container
-    const container = document.getElementById('ncviewer');
-    if (!container) {
-        console.warn("NC viewer container not found");
-        return;
-    }
-    
-    // Initialize viewer if not already done
-    if (!window.ncViewerInstance) {
+    /**
+     * Check WebGL support
+     * @returns {boolean} - WebGL support status
+     */
+    function isWebGLSupported() {
         try {
-            window.ncViewerInstance = new NCViewer(container);
-        } catch (error) {
-            console.warn("Failed to initialize NC Viewer:", error);
-            container.innerHTML = '<div class="ncviewer-placeholder">NC Viewer failed to initialize: ' + error.message + '</div>';
-            return;
+            const canvas = document.createElement('canvas');
+            return !!(window.WebGLRenderingContext && 
+                     (canvas.getContext('webgl') || canvas.getContext('experimental-webgl')));
+        } catch (e) {
+            return false;
         }
     }
     
-    // Load G-code
-    if (window.ncViewerInstance && window.ncViewerInstance.loadGcode) {
-        window.ncViewerInstance.loadGcode(gcodeText);
-    } else {
-        console.warn("NC Viewer instance not available");
+    /**
+     * Get viewer info
+     * @returns {Object} - Viewer information
+     */
+    function getInfo() {
+        return {
+            initialized: isInitialized,
+            hasGcode: currentGcode !== null,
+            hasSTL: currentSTL !== null,
+            webglSupported: isWebGLSupported(),
+            threejsAvailable: typeof THREE !== 'undefined'
+        };
     }
+    
+    // Public API
+    return {
+        init: init,
+        renderGcode: renderGcode,
+        renderSTL: renderSTL,
+        clear: clear,
+        getInfo: getInfo
+    };
+})();
+
+// Global function for backward compatibility
+window.renderGcode = function(gcodeText) {
+    return window.NCV.renderGcode(gcodeText);
 };

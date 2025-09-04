@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CNCera - 3D Analysis & G-code Generation</title>
+    <link rel="stylesheet" href="/static/css/app.css">
+    <link rel="stylesheet" href="/static/ncviewer/ncviewer.css">
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans p-6">
+    <div class="container">
+        <!-- File Upload Section -->
+        <div class="card">
+            <h2 class="card-header">Загрузка и анализ файла</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+                <div class="form-group">
+                    <label class="form-label">Файл</label>
+                    <input id="file" type="file" accept=".step,.stp,.stl" class="file-input">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Единицы</label>
+                    <select id="units" class="form-select">
+                        <option value="auto">Auto (mm)</option>
+                        <option value="mm">mm</option>
+                        <option value="inch">inch</option>
+                        <option value="m">m</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label tooltip" data-tooltip="Линейное отклонение для сетки (мм)">LinearDeflection</label>
+                    <input id="linDef" type="number" step="0.01" value="0.1" min="0.01" max="10" class="form-input">
+                </div>
+                <div class="form-group">
+                    <label class="form-label tooltip" data-tooltip="Угловое отклонение (градусы)">AngularDeflection (°)</label>
+                    <input id="angDef" type="number" step="0.5" value="15" min="0.01" max="89" class="form-input">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Relative</label>
+                    <input id="rel" type="checkbox" class="form-checkbox">
+                </div>
+            </div>
+            <button id="analyzeBtn" class="btn btn-primary">Анализировать</button>
+            <div id="log" class="log-area"></div>
+        </div>
+
+        <!-- Analysis Results Section -->
+        <div class="card analysis-panel">
+            <h2 class="card-header">Результат анализа</h2>
+            <div id="viewer" class="bg-gray-900 rounded-lg flex items-center justify-center" style="min-height: 400px;"></div>
+            <div id="meta" class="mt-4"></div>
+            <p class="text-sm text-gray-500 mt-2">Офлайн-вьювер использует three.js, OrbitControls.js, STLLoader.js. Если они недоступны, отображается PNG.</p>
+        </div>
+
+        <!-- G-code Generation Section -->
+        <div class="card">
+            <h2 class="card-header">Генерация G-кода</h2>
+            
+            <!-- Controller and Operation Type Selection -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+                <div class="form-group">
+                    <label class="form-label">Контроллер</label>
+                    <select id="controller" class="form-select">
+                        <option value="fanuc_metric">Fanuc (метрическая)</option>
+                        <option value="siemens">Siemens (метрическая)</option>
+                        <option value="heidenhain">Heidenhain (метрическая)</option>
+                        <option value="gsk">GSK (метрическая)</option>
+                        <option value="mazak">Mazak (метрическая)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Тип обработки</label>
+                    <select id="operation_type" class="form-select">
+                        <option value="milling">Фрезерная</option>
+                        <option value="turning">Токарная</option>
+                        <option value="drilling">Сверление</option>
+                        <option value="chamfer">Фаска</option>
+                        <option value="roughing">Черновая обработка</option>
+                        <option value="finishing">Финишная обработка</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">G54 (начало координат)</label>
+                    <select id="origin" class="form-select">
+                        <option value="bbox_min">Нижний угол</option>
+                        <option value="bbox_center">Центр низа</option>
+                        <option value="bbox_top_center">Центр верха</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Tool Selection -->
+            <div class="mb-6">
+                <h3 class="text-lg font-medium mb-3">Выбор инструмента</h3>
+                <div class="form-group">
+                    <label class="form-label">Инструмент</label>
+                    <select id="toolSelect" class="form-select">
+                        <option value="">Выберите инструмент</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Tool Parameters -->
+            <div class="mb-6">
+                <h3 class="text-lg font-medium mb-3">Параметры инструмента</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div class="form-group">
+                        <label class="form-label tooltip" data-tooltip="Диаметр инструмента (мм)">Ø инструмента, мм</label>
+                        <input id="tool" type="number" value="3" step="0.1" min="0.1" max="50" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label tooltip" data-tooltip="Скорость шпинделя (об/мин)">Spindle, об/мин</label>
+                        <input id="spindle" type="number" value="8000" step="100" min="1000" max="24000" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label tooltip" data-tooltip="Общая подача (мм/мин)">Feed, мм/мин</label>
+                        <input id="feed" type="number" value="300" step="10" min="10" max="5000" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label tooltip" data-tooltip="Скорость погружения (мм/мин)">Plunge, мм/мин</label>
+                        <input id="plunge" type="number" value="120" step="10" min="10" max="2000" class="form-input">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Milling Specific Settings -->
+            <div id="milling_settings" class="mb-6">
+                <h3 class="text-lg font-medium mb-3">Настройки фрезерования</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div class="form-group">
+                        <label class="form-label tooltip" data-tooltip="Доля диаметра инструмента (0.05—0.95)">Степовер</label>
+                        <input id="stepover" type="number" value="0.4" step="0.05" min="0.05" max="0.95" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label tooltip" data-tooltip="Шаг по Z для черновой обработки">Stepdown Z, мм</label>
+                        <input id="stepdown" type="number" value="0" step="0.5" min="0" max="50" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Ось проходов</label>
+                        <select id="dir" class="form-select">
+                            <option value="X">X</option>
+                            <option value="Y">Y</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label tooltip" data-tooltip="Безопасная высота по Z (мм)">Clearance Z, мм</label>
+                        <input id="clearance" type="number" value="5" step="0.5" min="1" max="50" class="form-input">
+                    </div>
+                </div>
+                
+                <!-- Advanced Milling Options -->
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
+                    <div class="form-group">
+                        <label class="form-label">Waterline</label>
+                        <input id="waterline" type="checkbox" class="form-checkbox">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label tooltip" data-tooltip="Шаг по Z для waterline">Шаг Waterline dZ, мм</label>
+                        <input id="waterline_dz" type="number" value="0.5" step="0.1" min="0" max="50" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label tooltip" data-tooltip="Степовер для финишной обработки">Finish stepover</label>
+                        <input id="finish_stepover" type="number" value="0.3" step="0.05" min="0.05" max="0.95" class="form-input">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Turning Specific Settings -->
+            <div id="turning_settings" class="mb-6 hidden">
+                <h3 class="text-lg font-medium mb-3">Настройки точения</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div class="form-group">
+                        <label class="form-label">Диаметр заготовки, мм</label>
+                        <input id="workpiece_diameter" type="number" value="50" step="1" min="1" max="500" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Глубина резания, мм</label>
+                        <input id="cut_depth" type="number" value="1" step="0.1" min="0.1" max="10" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Подача на оборот, мм/об</label>
+                        <input id="feed_per_rev" type="number" value="0.2" step="0.05" min="0.01" max="2" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Тип обработки</label>
+                        <select id="turning_type" class="form-select">
+                            <option value="roughing">Черновая</option>
+                            <option value="finishing">Чистовая</option>
+                            <option value="facing">Подрезка торца</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Drilling Specific Settings -->
+            <div id="drilling_settings" class="mb-6 hidden">
+                <h3 class="text-lg font-medium mb-3">Настройки сверления</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div class="form-group">
+                        <label class="form-label">Диаметр сверла, мм</label>
+                        <input id="drill_diameter" type="number" value="6" step="0.1" min="0.5" max="50" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Глубина сверления, мм</label>
+                        <input id="drill_depth" type="number" value="10" step="0.5" min="1" max="100" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Тип цикла</label>
+                        <select id="drill_cycle" class="form-select">
+                            <option value="G81">G81 - Простое сверление</option>
+                            <option value="G83">G83 - Прерывистое сверление</option>
+                            <option value="G82">G82 - С выдержкой</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Шаг при G83, мм</label>
+                        <input id="peck_depth" type="number" value="2" step="0.1" min="0.1" max="10" class="form-input">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Allowance Settings -->
+            <div class="mb-6">
+                <h3 class="text-lg font-medium mb-3">Ручные припуски</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div class="form-group">
+                        <label class="form-label tooltip" data-tooltip="Припуск по оси X">Припуск X, мм</label>
+                        <input id="allowance_x" type="number" value="0" step="0.1" min="-10" max="10" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label tooltip" data-tooltip="Припуск по оси Y">Припуск Y, мм</label>
+                        <input id="allowance_y" type="number" value="0" step="0.1" min="-10" max="10" class="form-input">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label tooltip" data-tooltip="Припуск по оси Z">Припуск Z, мм</label>
+                        <input id="allowance_z" type="number" value="0" step="0.1" min="-10" max="10" class="form-input">
+                    </div>
+                </div>
+            </div>
+
+            <!-- AI Analysis Section -->
+            <div class="mb-6">
+                <h3 class="text-lg font-medium mb-3">AI Анализ</h3>
+                <div class="flex space-x-4 mb-4">
+                    <button id="aiInspectBtn" class="btn btn-secondary">AI: Inspect Model</button>
+                    <button id="aiAnalyzeBtn" class="btn btn-secondary">AI: Analyze G-code</button>
+                </div>
+                <div id="aiResults" class="analysis-panel"></div>
+            </div>
+
+            <div class="flex items-center space-x-4">
+                <button id="generateBtn" class="btn btn-primary">Сгенерировать G-код</button>
+                <span id="glog" class="log-area"></span>
+            </div>
+        </div>
+
+        <!-- G-code Preview Section -->
+        <div id="gcode-preview" class="card hidden">
+            <h2 class="card-header">Предпросмотр G-кода</h2>
+            <div class="mb-4">
+                <button id="previewBtn" class="btn btn-success">3D Предпросмотр</button>
+            </div>
+            <div id="ncviewer" class="ncviewer-container"></div>
+            <div id="gcode-content" class="mt-4"></div>
+        </div>
+    </div>
+
+    <!-- Load three.js and dependencies -->
+    <script src="/static/ncviewer/three.min.js" defer></script>
+    <script src="/static/ncviewer/OrbitControls.js" defer></script>
+    <script src="/static/ncviewer/STLLoader.js" defer></script>
+    
+    <!-- Load app scripts -->
+    <script src="/static/js/ncviewer.js" defer></script>
+    <script src="/static/js/app.js" defer></script>
+</body>
+</html>
