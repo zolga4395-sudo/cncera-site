@@ -1,0 +1,105 @@
+{
+  "tools": [
+    {
+      "id": "EM-03",
+      "type": "endmill",
+      "name": "End Mill Ø3",
+      "diam_mm": 3,
+      "flutes": 4,
+      "max_rpm": 24000,
+      "max_feed": 2500,
+      "description": "3mm end mill for fine detail work"
+    },
+    {
+      "id": "EM-06",
+      "type": "endmill", 
+      "name": "End Mill Ø6",
+      "diam_mm": 6,
+      "flutes": 4,
+      "max_rpm": 24000,
+      "max_feed": 3000,
+      "description": "6mm end mill for general milling"
+    },
+    {
+      "id": "EM-10",
+      "type": "endmill",
+      "name": "End Mill Ø10", 
+      "diam_mm": 10,
+      "flutes": 4,
+      "max_rpm": 20000,
+      "max_feed": 4000,
+      "description": "10mm end mill for roughing operations"
+    },
+    {
+      "id": "EM-12",
+      "type": "endmill",
+      "name": "End Mill Ø12",
+      "diam_mm": 12,
+      "flutes": 4,
+      "max_rpm": 18000,
+      "max_feed": 4500,
+      "description": "12mm end mill for heavy material removal"
+    },
+    {
+      "id": "DR-03",
+      "type": "drill",
+      "name": "Drill Ø3",
+      "diam_mm": 3,
+      "flutes": 2,
+      "max_rpm": 15000,
+      "max_feed": 800,
+      "description": "3mm drill bit for small holes"
+    },
+    {
+      "id": "DR-06",
+      "type": "drill",
+      "name": "Drill Ø6",
+      "diam_mm": 6,
+      "flutes": 2,
+      "max_rpm": 12000,
+      "max_feed": 1200,
+      "description": "6mm drill bit for medium holes"
+    }
+  ],
+  "tool_types": [
+    {
+      "id": "endmill",
+      "name": "End Mill",
+      "description": "General purpose milling cutter"
+    },
+    {
+      "id": "drill",
+      "name": "Drill Bit", 
+      "description": "For drilling holes"
+    },
+    {
+      "id": "ball_mill",
+      "name": "Ball Mill",
+      "description": "For 3D contouring and finishing"
+    }
+  ],
+  "materials": [
+    {
+      "id": "hss",
+      "name": "High Speed Steel",
+      "description": "Standard HSS tooling"
+    },
+    {
+      "id": "carbide",
+      "name": "Carbide",
+      "description": "High performance carbide tooling"
+    }
+  ],
+  "coatings": [
+    {
+      "id": "uncoated",
+      "name": "Uncoated",
+      "description": "No coating"
+    },
+    {
+      "id": "tin",
+      "name": "TiN",
+      "description": "Titanium Nitride coating"
+    }
+  ]
+}

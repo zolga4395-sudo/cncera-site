@@ -1,0 +1,95 @@
+{
+  "materials": [
+    {
+      "id": "aluminum_6061",
+      "name": "Aluminum 6061-T6",
+      "group": "aluminum",
+      "vc_m_per_min": [200, 400],
+      "fz_mm_per_tooth": [0.05, 0.15],
+      "description": "Common aerospace aluminum alloy"
+    },
+    {
+      "id": "aluminum_7075",
+      "name": "Aluminum 7075-T6", 
+      "group": "aluminum",
+      "vc_m_per_min": [150, 300],
+      "fz_mm_per_tooth": [0.04, 0.12],
+      "description": "High strength aluminum alloy"
+    },
+    {
+      "id": "steel_1018",
+      "name": "Steel 1018",
+      "group": "steel",
+      "vc_m_per_min": [100, 200],
+      "fz_mm_per_tooth": [0.03, 0.08],
+      "description": "Low carbon steel"
+    },
+    {
+      "id": "steel_4140",
+      "name": "Steel 4140",
+      "group": "steel", 
+      "vc_m_per_min": [80, 150],
+      "fz_mm_per_tooth": [0.02, 0.06],
+      "description": "Chrome-moly steel"
+    },
+    {
+      "id": "stainless_304",
+      "name": "Stainless Steel 304",
+      "group": "stainless",
+      "vc_m_per_min": [60, 120],
+      "fz_mm_per_tooth": [0.02, 0.05],
+      "description": "Austenitic stainless steel"
+    },
+    {
+      "id": "titanium_6al4v",
+      "name": "Titanium 6Al-4V",
+      "group": "titanium",
+      "vc_m_per_min": [40, 80],
+      "fz_mm_per_tooth": [0.01, 0.03],
+      "description": "Aerospace titanium alloy"
+    },
+    {
+      "id": "plastic_abs",
+      "name": "ABS Plastic",
+      "group": "plastic",
+      "vc_m_per_min": [300, 600],
+      "fz_mm_per_tooth": [0.1, 0.3],
+      "description": "Acrylonitrile Butadiene Styrene"
+    },
+    {
+      "id": "plastic_pc",
+      "name": "Polycarbonate",
+      "group": "plastic",
+      "vc_m_per_min": [200, 400],
+      "fz_mm_per_tooth": [0.08, 0.2],
+      "description": "Polycarbonate plastic"
+    }
+  ],
+  "groups": [
+    {
+      "id": "aluminum",
+      "name": "Aluminum Alloys",
+      "description": "Various aluminum alloys"
+    },
+    {
+      "id": "steel",
+      "name": "Steel Alloys", 
+      "description": "Carbon and alloy steels"
+    },
+    {
+      "id": "stainless",
+      "name": "Stainless Steel",
+      "description": "Corrosion resistant steels"
+    },
+    {
+      "id": "titanium",
+      "name": "Titanium Alloys",
+      "description": "High performance titanium"
+    },
+    {
+      "id": "plastic",
+      "name": "Plastics",
+      "description": "Engineering plastics"
+    }
+  ]
+}

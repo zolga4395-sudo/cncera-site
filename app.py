@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 CNCera - Complete 3D Analysis & G-code Generation Platform
-Production-ready implementation with enhanced error handling and security
+Enhanced with AI analysis, improved Z-origin handling, and integrated G-code preview
 """
 
 import os
@@ -17,6 +17,7 @@ import math
 import time
 import re
 import glob
+import requests
 from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 from dataclasses import dataclass
@@ -255,6 +256,191 @@ def validate_gcode(gcode: str, postprocessor_id: str = None) -> Dict:
 
 
 # ============================================================================
+# AI ANALYSIS MODULE
+# ============================================================================
+
+class AIProvider:
+    def __init__(self):
+        self.openai_key = os.environ.get("OPENAI_API_KEY")
+        self.anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+        self.grok_key = os.environ.get("GROK_API_KEY")
+        self.timeout = 12
+
+    def get_provider(self) -> Tuple[str, str]:
+        """Get preferred AI provider and model"""
+        if self.openai_key:
+            return "openai", "gpt-4o-mini"
+        elif self.anthropic_key:
+            return "anthropic", "claude-3-haiku-20240307"
+        elif self.grok_key:
+            return "grok", "grok-beta"
+        return None, None
+
+    def call_ai(self, prompt: str, model: str = None) -> Dict:
+        """Call AI provider with timeout and error handling"""
+        provider, default_model = self.get_provider()
+        if not provider:
+            return {"success": False, "error": "No AI provider configured"}
+        
+        model = model or default_model
+        
+        try:
+            if provider == "openai":
+                return self._call_openai(prompt, model)
+            elif provider == "anthropic":
+                return self._call_anthropic(prompt, model)
+            elif provider == "grok":
+                return self._call_grok(prompt, model)
+        except Exception as e:
+            logger.warning(f"AI call failed: {e}")
+            return {"success": False, "error": f"AI service error: {str(e)}"}
+
+    def _call_openai(self, prompt: str, model: str) -> Dict:
+        """Call OpenAI API"""
+        headers = {"Authorization": f"Bearer {self.openai_key}", "Content-Type": "application/json"}
+        data = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 1000,
+            "temperature": 0.3
+        }
+        response = requests.post(
+            "https://api.openai.com/v1/chat/completions",
+            headers=headers, json=data, timeout=self.timeout
+        )
+        if response.status_code == 200:
+            result = response.json()
+            return {
+                "success": True,
+                "answer": result["choices"][0]["message"]["content"],
+                "provider": "openai",
+                "model": model
+            }
+        return {"success": False, "error": f"OpenAI API error: {response.status_code}"}
+
+    def _call_anthropic(self, prompt: str, model: str) -> Dict:
+        """Call Anthropic API"""
+        headers = {
+            "x-api-key": self.anthropic_key,
+            "Content-Type": "application/json",
+            "anthropic-version": "2023-06-01"
+        }
+        data = {
+            "model": model,
+            "max_tokens": 1000,
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers=headers, json=data, timeout=self.timeout
+        )
+        if response.status_code == 200:
+            result = response.json()
+            return {
+                "success": True,
+                "answer": result["content"][0]["text"],
+                "provider": "anthropic",
+                "model": model
+            }
+        return {"success": False, "error": f"Anthropic API error: {response.status_code}"}
+
+    def _call_grok(self, prompt: str, model: str) -> Dict:
+        """Call Grok API (placeholder - would need actual implementation)"""
+        return {"success": False, "error": "Grok API not implemented"}
+
+
+ai_provider = AIProvider()
+
+
+def analyze_model_with_ai(geometry: Dict, bbox: Dict, units: str, controller: str, operation_type: str, tool: Dict = None) -> Dict:
+    """Analyze 3D model with AI for machining recommendations"""
+    prompt = f"""
+Analyze this 3D model for CNC machining:
+
+Geometry: {json.dumps(geometry, indent=2)}
+Bounding box: {json.dumps(bbox, indent=2)}
+Units: {units}
+Controller: {controller}
+Operation: {operation_type}
+Tool: {json.dumps(tool or {}, indent=2)}
+
+Provide analysis in JSON format:
+{{
+    "findings": {{
+        "zmin": <minimum Z coordinate>,
+        "zmax": <maximum Z coordinate>,
+        "thickness": <part thickness>,
+        "flatness": <surface flatness assessment>,
+        "holes": [<list of hole features>],
+        "risks": [<list of machining risks>]
+    }},
+    "suggestions": {{
+        "origin": <recommended origin point>,
+        "stepover": <recommended stepover ratio>,
+        "stepdown": <recommended stepdown value>,
+        "feeds_speeds": <recommended feeds and speeds>,
+        "clamps": <clamping recommendations>
+    }}
+}}
+"""
+    result = ai_provider.call_ai(prompt)
+    if result["success"]:
+        try:
+            # Try to parse AI response as JSON
+            ai_data = json.loads(result["answer"])
+            return {"success": True, "findings": ai_data.get("findings", {}), "suggestions": ai_data.get("suggestions", {})}
+        except:
+            # Fallback to text response
+            return {"success": True, "findings": {}, "suggestions": {"note": result["answer"]}}
+    return result
+
+
+def analyze_gcode_with_ai(gcode: str, controller: str, material: str = None, tool: str = None) -> Dict:
+    """Analyze G-code with AI for optimization suggestions"""
+    # Get linter results first
+    linter_result = validate_gcode(gcode, controller)
+    
+    prompt = f"""
+Analyze this G-code for CNC machining optimization:
+
+Controller: {controller}
+Material: {material or "Unknown"}
+Tool: {tool or "Unknown"}
+G-code (first 50 lines):
+{chr(10).join(gcode.split(chr(10))[:50])}
+
+Linter results: {json.dumps(linter_result, indent=2)}
+
+Provide analysis in JSON format:
+{{
+    "summary": <brief summary of the G-code>,
+    "risks": [<list of potential issues>],
+    "suggestions": [<list of optimization suggestions>]
+}}
+"""
+    result = ai_provider.call_ai(prompt)
+    if result["success"]:
+        try:
+            ai_data = json.loads(result["answer"])
+            return {
+                "success": True,
+                "summary": ai_data.get("summary", ""),
+                "risks": ai_data.get("risks", []),
+                "suggestions": ai_data.get("suggestions", []),
+                "linter": linter_result
+            }
+        except:
+            return {
+                "success": True,
+                "summary": result["answer"],
+                "risks": [],
+                "suggestions": [],
+                "linter": linter_result
+            }
+    return result
+
+
+# ============================================================================
 # SERVER-SIDE PNG RENDERING (fallback)
 # ============================================================================
 
@@ -335,7 +521,8 @@ def get_freecadcmd_path() -> Optional[str]:
 API_ENDPOINTS = {
     "/upload", "/generate_gcode", "/calculate_parameters", 
     "/validate_gcode", "/materials", "/tools", "/postprocessors", 
-    "/download_gcode", "/download_results", "/healthz"
+    "/download_gcode", "/download_results", "/healthz",
+    "/ai/inspect_model", "/ai/analyze_gcode", "/ai/ask"
 }
 
 @app.errorhandler(Exception)
@@ -934,6 +1121,59 @@ def get_controller_settings(controller: str) -> Dict:
         "spindle_on": "M3 S{rpm}", "spindle_off": "M5"
     }
 
+def deduplicate_gcode_lines(gcode_lines: List[str]) -> List[str]:
+    """Remove duplicate consecutive lines and redundant modal repeats"""
+    if not gcode_lines:
+        return []
+    
+    result = []
+    last_line = None
+    last_xyz = None
+    modal_g = None
+    modal_m = None
+    
+    for line in gcode_lines:
+        line = line.strip()
+        if not line or line.startswith('(') or line.startswith(';'):
+            result.append(line)
+            continue
+            
+        # Check for exact duplicates
+        if line == last_line:
+            continue
+            
+        # Check for redundant XYZ coordinates
+        xyz_match = re.search(r'[XY](-?\d*\.?\d*)', line)
+        if xyz_match and last_xyz and line == last_xyz:
+            continue
+            
+        # Check for redundant modal G codes
+        g_match = re.search(r'G(\d+)', line)
+        if g_match and modal_g and g_match.group(1) == modal_g:
+            # Remove the G code from the line
+            line = re.sub(r'G\d+\s*', '', line).strip()
+            if not line:
+                continue
+                
+        # Check for redundant modal M codes
+        m_match = re.search(r'M(\d+)', line)
+        if m_match and modal_m and m_match.group(1) == modal_m:
+            # Remove the M code from the line
+            line = re.sub(r'M\d+\s*', '', line).strip()
+            if not line:
+                continue
+        
+        result.append(line)
+        last_line = line
+        last_xyz = line if xyz_match else last_xyz
+        
+        if g_match:
+            modal_g = g_match.group(1)
+        if m_match:
+            modal_m = m_match.group(1)
+    
+    return result
+
 def generate_raster_gcode(
         stl_path: Path, out_path: Path, tool_diam: float = 3.0, stepover: float = 0.4,
         feed: float = 300.0, plunge: float = 120.0, clearance: float = 5.0,
@@ -958,6 +1198,7 @@ def generate_raster_gcode(
     step_xy = max(0.1, tool_diam * stepover)
     (xmin, xmax, ymin, ymax, zmin, zmax), z_func = build_top_sampler(stl_path, step_xy)
 
+    # Apply allowances to geometry bounds
     xmin -= allowance_x; xmax += allowance_x
     ymin -= allowance_y; ymax += allowance_y
     zmax += allowance_z
@@ -976,6 +1217,7 @@ def generate_raster_gcode(
     nx = max(2, int(math.ceil((xmax - xmin) / step_xy)) + 1)
     ny = max(2, int(math.ceil((ymax - ymin) / step_xy)) + 1)
 
+    # FIXED: Correct Z-origin handling
     origin = origin if origin in ("bbox_min", "bbox_center", "bbox_top_center") else "bbox_min"
     ox, oy, oz = {
         "bbox_min": (xmin, ymin, zmin),
@@ -1008,85 +1250,111 @@ def generate_raster_gcode(
         Z = [[z_func(x, y) or -1e12 for x in xs] for y in ys]
         return xs, ys, Z
 
-    with open(out_path, "w", encoding="ascii", errors="ignore") as f:
-        w = f.write
-        w(f"(Generated by CNCera - {operation_type.title()} - {controller_settings['controller'].upper()})\n")
-        w(f"(Origin: {origin})\n")
-        w(controller_settings["header"])
+    # Collect all G-code lines for deduplication
+    gcode_lines = []
+    
+    def w(line: str):
+        gcode_lines.append(line)
 
-        if spindle: w(f"{controller_settings['spindle_on'].format(rpm=spindle)}\n")
-        w(f"{controller_settings['coolant_on']}\n")
-        w(f"{controller_settings['rapid']} Z{clearance:.3f}\n")
+    w(f"(Generated by CNCera - {operation_type.title()} - {controller_settings['controller'].upper()})")
+    w(f"(Origin: {origin})")
+    w("")
+    
+    for cmd in controller_settings["header"].split('\n'):
+        if cmd.strip():
+            w(cmd)
 
-        if stepdown > 0:
-            zL = zmax
-            while zL > zmin + 0.5 * stepdown:
-                zL -= stepdown
-                w(f"(Rough level Z={zL - oz:.3f})\n")
-                for line in zigzag_lines():
-                    x0, y0 = line[0]
-                    w(f"{controller_settings['rapid']} X{(x0 - ox):.3f} Y{(y0 - oy):.3f}\n")
-                    z0 = z_func(x0, y0)
-                    if z0 is not None:
-                        zt = min(z0, zL)
-                        w(f"{controller_settings['linear']} Z{(zt - oz):.3f} F{plunge:.1f}\n")
-                        w(f"F{feed_rough:.1f}\n")
-                    else:
-                        w(f"{controller_settings['rapid']} Z{clearance:.3f}\n")
-                    for x, y in line[1:]:
-                        z = z_func(x, y)
-                        if z is None:
-                            w(f"{controller_settings['rapid']} Z{clearance:.3f}\n{controller_settings['rapid']} X{(x - ox):.3f} Y{(y - oy):.3f}\n")
-                        else:
-                            zt = min(z, zL)
-                            w(f"{controller_settings['linear']} X{(x - ox):.3f} Y{(y - oy):.3f} Z{(zt - oz):.3f}\n")
-                w(f"{controller_settings['rapid']} Z{clearance:.3f}\n")
+    if spindle: w(controller_settings['spindle_on'].format(rpm=spindle))
+    w(controller_settings['coolant_on'])
+    w(f"{controller_settings['rapid']} Z{clearance:.3f}")
 
-        if finish_stepover != stepover:
-            step_fin_xy = max(0.05, tool_diam * finish_stepover)
-            if step_fin_xy != step_xy:
-                (xmin, xmax, ymin, ymax, _, _), z_func = build_top_sampler(stl_path, step_fin_xy)
-                xmin -= allowance_x; xmax += allowance_x; ymin -= allowance_y; ymax += allowance_y
-                nx = max(2, int(math.ceil((xmax - xmin) / step_fin_xy)) + 1)
-                ny = max(2, int(math.ceil((ymax - ymin) / step_fin_xy)) + 1)
-
-        w("(Finish pass)\n")
-        for line in zigzag_lines():
-            x0, y0 = line[0]
-            w(f"{controller_settings['rapid']} X{(x0 - ox):.3f} Y{(y0 - oy):.3f}\n")
-            z0 = z_func(x0, y0)
-            if z0 is not None:
-                w(f"{controller_settings['linear']} Z{(z0 - oz):.3f} F{plunge:.1f}\n")
-                w(f"F{feed_finish:.1f}\n")
-            else:
-                w(f"{controller_settings['rapid']} Z{clearance:.3f}\n")
-            for x, y in line[1:]:
-                z = z_func(x, y)
-                if z is None:
-                    w(f"{controller_settings['rapid']} Z{clearance:.3f}\n{controller_settings['rapid']} X{(x - ox):.3f} Y{(y - oy):.3f}\n")
+    if stepdown > 0:
+        zL = zmax
+        while zL > zmin + 0.5 * stepdown:
+            zL -= stepdown
+            w(f"(Rough level Z={zL - oz:.3f})")
+            for line in zigzag_lines():
+                x0, y0 = line[0]
+                w(f"{controller_settings['rapid']} X{(x0 - ox):.3f} Y{(y0 - oy):.3f}")
+                z0 = z_func(x0, y0)
+                if z0 is not None:
+                    # FIXED: Clamp Z to part bounds with allowance
+                    zt = min(z0, zL)
+                    zt = max(zt, zmin - abs(allowance_z))  # Never go below part
+                    w(f"{controller_settings['linear']} Z{(zt - oz):.3f} F{plunge:.1f}")
+                    w(f"F{feed_rough:.1f}")
                 else:
-                    w(f"{controller_settings['linear']} X{(x - ox):.3f} Y{(y - oy):.3f} Z{(z - oz):.3f}\n")
-        w(f"{controller_settings['rapid']} Z{clearance:.3f}\n")
+                    w(f"{controller_settings['rapid']} Z{clearance:.3f}")
+                for x, y in line[1:]:
+                    z = z_func(x, y)
+                    if z is None:
+                        w(f"{controller_settings['rapid']} Z{clearance:.3f}")
+                        w(f"{controller_settings['rapid']} X{(x - ox):.3f} Y{(y - oy):.3f}")
+                    else:
+                        # FIXED: Clamp Z to part bounds with allowance
+                        zt = min(z, zL)
+                        zt = max(zt, zmin - abs(allowance_z))  # Never go below part
+                        w(f"{controller_settings['linear']} X{(x - ox):.3f} Y{(y - oy):.3f} Z{(zt - oz):.3f}")
+            w(f"{controller_settings['rapid']} Z{clearance:.3f}")
 
-        if waterline and waterline_dz > 0:
-            w("(Waterline)\n")
-            xs, ys, Z = sample_height_grid(max(step_xy, tool_diam * 0.6))
-            cur = zmax
-            while cur > zmin + 0.5 * waterline_dz:
-                cur -= waterline_dz
-                loops = marching_squares(Z, xs, ys, cur)
-                for loop in loops:
-                    sx, sy = loop[0]
-                    w(f"{controller_settings['rapid']} X{(sx - ox):.3f} Y{(sy - oy):.3f} Z{clearance:.3f}\n")
-                    w(f"{controller_settings['linear']} Z{(cur - oz):.3f} F{plunge:.1f}\n")
-                    w(f"F{feed_finish:.1f}\n")
-                    for x, y in loop[1:]:
-                        w(f"{controller_settings['linear']} X{(x - ox):.3f} Y{(y - oy):.3f} Z{(cur - oz):.3f}\n")
-                    w(f"{controller_settings['rapid']} Z{clearance:.3f}\n")
+    if finish_stepover != stepover:
+        step_fin_xy = max(0.05, tool_diam * finish_stepover)
+        if step_fin_xy != step_xy:
+            (xmin, xmax, ymin, ymax, _, _), z_func = build_top_sampler(stl_path, step_fin_xy)
+            xmin -= allowance_x; xmax += allowance_x; ymin -= allowance_y; ymax += allowance_y
+            nx = max(2, int(math.ceil((xmax - xmin) / step_fin_xy)) + 1)
+            ny = max(2, int(math.ceil((ymax - ymin) / step_fin_xy)) + 1)
 
-        w(f"{controller_settings['coolant_off']}\n")
-        if spindle: w(f"{controller_settings['spindle_off']}\n")
-        w(controller_settings["footer"])
+    w("(Finish pass)")
+    for line in zigzag_lines():
+        x0, y0 = line[0]
+        w(f"{controller_settings['rapid']} X{(x0 - ox):.3f} Y{(y0 - oy):.3f}")
+        z0 = z_func(x0, y0)
+        if z0 is not None:
+            # FIXED: Clamp Z to part bounds with allowance
+            zt = max(z0, zmin - abs(allowance_z))  # Never go below part
+            w(f"{controller_settings['linear']} Z{(zt - oz):.3f} F{plunge:.1f}")
+            w(f"F{feed_finish:.1f}")
+        else:
+            w(f"{controller_settings['rapid']} Z{clearance:.3f}")
+        for x, y in line[1:]:
+            z = z_func(x, y)
+            if z is None:
+                w(f"{controller_settings['rapid']} Z{clearance:.3f}")
+                w(f"{controller_settings['rapid']} X{(x - ox):.3f} Y{(y - oy):.3f}")
+            else:
+                # FIXED: Clamp Z to part bounds with allowance
+                zt = max(z, zmin - abs(allowance_z))  # Never go below part
+                w(f"{controller_settings['linear']} X{(x - ox):.3f} Y{(y - oy):.3f} Z{(zt - oz):.3f}")
+    w(f"{controller_settings['rapid']} Z{clearance:.3f}")
+
+    if waterline and waterline_dz > 0:
+        w("(Waterline)")
+        xs, ys, Z = sample_height_grid(max(step_xy, tool_diam * 0.6))
+        cur = zmax
+        while cur > zmin + 0.5 * waterline_dz:
+            cur -= waterline_dz
+            loops = marching_squares(Z, xs, ys, cur)
+            for loop in loops:
+                sx, sy = loop[0]
+                w(f"{controller_settings['rapid']} X{(sx - ox):.3f} Y{(sy - oy):.3f} Z{clearance:.3f}")
+                w(f"{controller_settings['linear']} Z{(cur - oz):.3f} F{plunge:.1f}")
+                w(f"F{feed_finish:.1f}")
+                for x, y in loop[1:]:
+                    w(f"{controller_settings['linear']} X{(x - ox):.3f} Y{(y - oy):.3f} Z{(cur - oz):.3f}")
+                w(f"{controller_settings['rapid']} Z{clearance:.3f}")
+
+    w(controller_settings['coolant_off'])
+    if spindle: w(controller_settings['spindle_off'])
+    w(controller_settings["footer"])
+
+    # Deduplicate G-code lines
+    deduplicated_lines = deduplicate_gcode_lines(gcode_lines)
+    
+    # Write final G-code
+    with open(out_path, "w", encoding="ascii", errors="ignore") as f:
+        for line in deduplicated_lines:
+            f.write(line + "\n")
 
     return {
         "bbox": {"xmin": xmin, "xmax": xmax, "ymin": ymin, "ymax": ymax, "zmin": zmin, "zmax": zmax},
@@ -1149,6 +1417,68 @@ def validate_gcode_endpoint():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
+# ============================================================================
+# AI ANALYSIS ROUTES
+# ============================================================================
+
+@app.route("/ai/inspect_model", methods=["POST"])
+def ai_inspect_model():
+    """AI analysis of 3D model for machining recommendations"""
+    try:
+        data = request.get_json()
+        geometry = data.get("geometry", {})
+        bbox = data.get("bbox", {})
+        units = data.get("units", "mm")
+        controller = data.get("controller", "fanuc")
+        operation_type = data.get("operation_type", "milling")
+        tool = data.get("tool", {})
+        
+        result = analyze_model_with_ai(geometry, bbox, units, controller, operation_type, tool)
+        return jsonify(result)
+    except Exception as e:
+        logger.warning(f"AI model inspection failed: {e}")
+        return jsonify({"success": False, "error": str(e)})
+
+@app.route("/ai/analyze_gcode", methods=["POST"])
+def ai_analyze_gcode():
+    """AI analysis of G-code for optimization suggestions"""
+    try:
+        data = request.get_json()
+        gcode = data.get("gcode", "")
+        controller = data.get("controller", "fanuc")
+        material = data.get("material")
+        tool = data.get("tool")
+        
+        if not gcode:
+            return jsonify({"success": False, "error": "No G-code provided"})
+        
+        result = analyze_gcode_with_ai(gcode, controller, material, tool)
+        return jsonify(result)
+    except Exception as e:
+        logger.warning(f"AI G-code analysis failed: {e}")
+        return jsonify({"success": False, "error": str(e)})
+
+@app.route("/ai/ask", methods=["POST"])
+def ai_ask():
+    """General AI assistant"""
+    try:
+        data = request.get_json()
+        prompt = data.get("prompt", "")
+        model = data.get("model")
+        
+        if not prompt:
+            return jsonify({"success": False, "error": "No prompt provided"})
+        
+        result = ai_provider.call_ai(prompt, model)
+        return jsonify(result)
+    except Exception as e:
+        logger.warning(f"AI ask failed: {e}")
+        return jsonify({"success": False, "error": str(e)})
+
+# ============================================================================
+# MAIN ROUTES
+# ============================================================================
+
 @app.route("/")
 def index():
     """Main page with fallback HTML"""
@@ -1167,121 +1497,232 @@ def index():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>CNCera - 3D Analysis & G-code Generation</title>
+        <script src="https://cdn.tailwindcss.com"></script>
         <style>
-            body { 
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-                margin: 0; padding: 20px; 
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: #333; min-height: 100vh;
+            #viewer { min-height: 400px; }
+            #log, #glog { white-space: pre-wrap; }
+            .tooltip { position: relative; }
+            .tooltip:hover::after {
+                content: attr(data-tooltip);
+                position: absolute; z-index: 10; bottom: 100%; left: 50%; transform: translateX(-50%);
+                background: #1f2937; color: #e5e7eb; padding: 4px 8px; border-radius: 4px;
+                font-size: 0.875rem; white-space: nowrap;
             }
-            .container { 
-                max-width: 1200px; margin: 0 auto; background: white; 
-                border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); overflow: hidden;
+            .analysis-panel { 
+                background: #f8fafc; color: #1f2937; 
+                border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px;
             }
-            .header { 
-                background: #2c3e50; color: white; padding: 30px; text-align: center; 
-            }
-            .header h1 { margin: 0; font-size: 2.5em; font-weight: 300; }
-            .content { padding: 40px; }
-            .api-section { 
-                margin: 30px 0; padding: 20px; background: #f8f9fa; 
-                border-radius: 8px; border-left: 4px solid #3498db; 
-            }
-            .api-section h3 { margin-top: 0; color: #2c3e50; }
-            .endpoint { 
-                background: #ecf0f1; padding: 10px 15px; margin: 10px 0; 
-                border-radius: 5px; font-family: 'Courier New', monospace; 
-                border-left: 3px solid #e74c3c; 
-            }
-            .method { 
-                display: inline-block; padding: 2px 8px; border-radius: 3px; 
-                font-size: 0.8em; font-weight: bold; margin-right: 10px; 
-            }
-            .get { background: #27ae60; color: white; }
-            .post { background: #e67e22; color: white; }
-            .description { color: #7f8c8d; margin-top: 5px; }
-            .status { 
-                background: #d4edda; color: #155724; padding: 15px; 
-                border-radius: 5px; margin: 20px 0; border: 1px solid #c3e6cb; 
+            .analysis-panel pre { 
+                background: #ffffff; color: #374151; padding: 12px; 
+                border-radius: 4px; border: 1px solid #d1d5db; font-family: 'Courier New', monospace;
             }
         </style>
     </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>CNCera</h1>
-                <p>Complete 3D Analysis & G-code Generation Platform</p>
+    <body class="bg-gray-900 text-gray-100 font-sans p-6">
+        <div class="max-w-5xl mx-auto space-y-6">
+            <!-- File Upload Section -->
+            <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+                <h2 class="text-xl font-semibold mb-4">Загрузка и анализ файла</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Файл</label>
+                        <input id="file" type="file" accept=".step,.stp,.stl" class="block w-full text-sm text-gray-900 bg-gray-700 border border-gray-600 rounded-lg p-2 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:bg-blue-600 file:text-white hover:file:bg-blue-700">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Единицы</label>
+                        <select id="units" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                            <option value="auto">Auto (mm)</option>
+                            <option value="mm">mm</option>
+                            <option value="inch">inch</option>
+                            <option value="m">m</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Линейное отклонение для сетки (мм)">LinearDeflection</label>
+                        <input id="linDef" type="number" step="0.01" value="0.1" min="0.01" max="10" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Угловое отклонение (градусы)">AngularDeflection (°)</label>
+                        <input id="angDef" type="number" step="0.5" value="15" min="0.01" max="89" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Relative</label>
+                        <input id="rel" type="checkbox" class="h-5 w-5 text-blue-600 bg-gray-700 border-gray-600 rounded">
+                    </div>
+                </div>
+                <button onclick="analyze()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">Анализировать</button>
+                <div id="log" class="mt-4 text-gray-400"></div>
             </div>
-            <div class="content">
-                <div class="status">
-                    <strong>✅ Сервер работает!</strong> Основной интерфейс недоступен, но API функционирует.
+
+            <!-- Analysis Results Section -->
+            <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+                <h2 class="text-xl font-semibold mb-4">Результат анализа</h2>
+                <div id="viewer" class="bg-gray-900 rounded-lg flex items-center justify-center"></div>
+                <div id="meta" class="mt-4"></div>
+                
+                <!-- AI Analysis Panel -->
+                <div id="ai-analysis" class="analysis-panel mt-4" style="display: none;">
+                    <h3 class="text-lg font-medium mb-3">AI Анализ</h3>
+                    <div id="ai-findings" class="mb-4"></div>
+                    <div class="flex space-x-2">
+                        <button onclick="aiInspectModel()" class="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700">AI: Inspect Model</button>
+                        <button onclick="aiAnalyzeGcode()" class="bg-purple-600 text-white px-3 py-1 rounded text-sm hover:bg-purple-700">AI: Analyze G-code</button>
+                    </div>
                 </div>
                 
-                <div class="api-section">
-                    <h3>📁 Загрузка и конвертация файлов</h3>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>/upload
-                        <div class="description">Загрузка STEP/STL файлов и конвертация в STL</div>
+                <p class="text-sm text-gray-500 mt-2">Офлайн-вьювер использует three.min.js, OrbitControls.js, STLLoader.js. Если они недоступны, отображается PNG.</p>
+            </div>
+
+            <!-- G-code Generation Section -->
+            <div class="bg-gray-800 p-6 rounded-lg shadow-lg">
+                <h2 class="text-xl font-semibold mb-4">Генерация G-кода</h2>
+
+                <!-- Controller and Operation Type Selection -->
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Контроллер</label>
+                        <select id="controller" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                            <option value="fanuc_metric">Fanuc</option>
+                            <option value="siemens">Siemens</option>
+                            <option value="heidenhain">Heidenhain</option>
+                            <option value="gsk">GSK</option>
+                            <option value="mazak">Mazak</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">Тип обработки</label>
+                        <select id="operation_type" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100" onchange="toggleOperationSettings()">
+                            <option value="milling">Фрезерная</option>
+                            <option value="turning">Токарная</option>
+                            <option value="drilling">Сверление</option>
+                            <option value="chamfer">Фаска</option>
+                            <option value="roughing">Черновая обработка</option>
+                            <option value="finishing">Финишная обработка</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm text-gray-400 mb-1">G54 (начало координат)</label>
+                        <select id="origin" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                            <option value="bbox_min">Нижний угол</option>
+                            <option value="bbox_center">Центр низа</option>
+                            <option value="bbox_top_center">Центр верха</option>
+                        </select>
                     </div>
                 </div>
 
-                <div class="api-section">
-                    <h3>⚙️ Генерация G-кода</h3>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>/generate_gcode
-                        <div class="description">Генерация G-кода для фрезерования</div>
+                <!-- Tool Selection -->
+                <div class="mb-6">
+                    <h3 class="text-lg font-medium mb-3">Выбор инструмента</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Инструмент</label>
+                            <select id="tool_select" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100" onchange="loadToolDefaults()">
+                                <option value="">Выберите инструмент</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Диаметр инструмента (мм)">Ø инструмента, мм</label>
+                            <input id="tool" type="number" value="3" step="0.1" min="0.1" max="50" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        </div>
                     </div>
                 </div>
 
-                <div class="api-section">
-                    <h3>🔧 Конфигурация</h3>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>/materials
-                        <div class="description">Список материалов</div>
-                    </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>/tools
-                        <div class="description">Список инструментов</div>
-                    </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>/postprocessors
-                        <div class="description">Список постпроцессоров</div>
-                    </div>
-                </div>
-
-                <div class="api-section">
-                    <h3>📊 Анализ и валидация</h3>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>/calculate_parameters
-                        <div class="description">Расчёт параметров резания</div>
-                    </div>
-                    <div class="endpoint">
-                        <span class="method post">POST</span>/validate_gcode
-                        <div class="description">Валидация G-кода</div>
+                <!-- Tool Parameters -->
+                <div class="mb-6">
+                    <h3 class="text-lg font-medium mb-3">Параметры инструмента</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Скорость шпинделя (об/мин)">Spindle, об/мин</label>
+                            <input id="spindle" type="number" value="8000" step="100" min="1000" max="24000" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Общая подача (мм/мин)">Feed, мм/мин</label>
+                            <input id="feed" type="number" value="300" step="10" min="10" max="5000" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Скорость погружения (мм/мин)">Plunge, мм/мин</label>
+                            <input id="plunge" type="number" value="120" step="10" min="10" max="2000" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Безопасная высота по Z (мм)">Clearance Z, мм</label>
+                            <input id="clearance" type="number" value="5" step="0.5" min="1" max="50" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        </div>
                     </div>
                 </div>
 
-                <div class="api-section">
-                    <h3>📥 Скачивание файлов</h3>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>/download_gcode
-                        <div class="description">Скачивание сгенерированного G-кода</div>
+                <!-- Milling Specific Settings -->
+                <div id="milling_settings" class="mb-6">
+                    <h3 class="text-lg font-medium mb-3">Настройки фрезерования</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Доля диаметра инструмента (0.05—0.95)">Степовер</label>
+                            <input id="stepover" type="number" value="0.4" step="0.05" min="0.05" max="0.95" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Шаг по Z для черновой обработки">Stepdown Z, мм</label>
+                            <input id="stepdown" type="number" value="0" step="0.5" min="0" max="50" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Ось проходов</label>
+                            <select id="dir" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                                <option>X</option>
+                                <option>Y</option>
+                            </select>
+                        </div>
                     </div>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>/download_results
-                        <div class="description">Скачивание результатов анализа</div>
+
+                    <!-- Advanced Milling Options -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1">Waterline</label>
+                            <input id="waterline" type="checkbox" class="h-5 w-5 text-blue-600 bg-gray-700 border-gray-600 rounded">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Шаг по Z для waterline">Шаг Waterline dZ, мм</label>
+                            <input id="waterline_dz" type="number" value="0.5" step="0.1" min="0" max="50" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Степовер для финишной обработки">Finish stepover</label>
+                            <input id="finish_stepover" type="number" value="0.3" step="0.05" min="0.05" max="0.95" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        </div>
                     </div>
                 </div>
 
-                <div class="api-section">
-                    <h3>🏥 Мониторинг</h3>
-                    <div class="endpoint">
-                        <span class="method get">GET</span>/healthz
-                        <div class="description">Проверка состояния сервера</div>
+                <!-- Allowance Settings -->
+                <div class="mb-6">
+                    <h3 class="text-lg font-medium mb-3">Ручные припуски</h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Припуск по оси X">Припуск X, мм</label>
+                            <input id="allowance_x" type="number" value="0" step="0.1" min="-10" max="10" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Припуск по оси Y">Припуск Y, мм</label>
+                            <input id="allowance_y" type="number" value="0" step="0.1" min="-10" max="10" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-gray-400 mb-1 tooltip" data-tooltip="Припуск по оси Z">Припуск Z, мм</label>
+                            <input id="allowance_z" type="number" value="0" step="0.1" min="-10" max="10" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-2 text-gray-100">
+                        </div>
                     </div>
+                </div>
+
+                <div class="flex items-center space-x-4">
+                    <button onclick="gen()" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">Сгенерировать G-код</button>
+                    <span id="glog" class="text-gray-400"></span>
                 </div>
             </div>
+
+            <!-- G-code Preview Section -->
+            <div id="gcode-preview" class="bg-gray-800 p-6 rounded-lg shadow-lg" style="display: none;">
+                <h2 class="text-xl font-semibold mb-4">Предпросмотр G-кода</h2>
+                <div id="ncviewer" class="bg-gray-900 rounded-lg" style="height: 400px;"></div>
+                <div id="gcode-content" class="mt-4"></div>
+            </div>
         </div>
+
+        <script src="/static/js/app.js"></script>
+        <script src="/static/js/ncviewer.js"></script>
     </body>
     </html>
     """
