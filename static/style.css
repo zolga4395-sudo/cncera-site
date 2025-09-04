@@ -1,0 +1,172 @@
+#viewer { 
+    min-height: 400px; 
+}
+
+#log, #glog { 
+    white-space: pre-wrap; 
+}
+
+.tooltip { 
+    position: relative; 
+}
+
+.tooltip:hover::after {
+    content: attr(data-tooltip);
+    position: absolute; 
+    z-index: 10; 
+    bottom: 100%; 
+    left: 50%; 
+    transform: translateX(-50%);
+    background: #1f2937; 
+    color: #e5e7eb; 
+    padding: 4px 8px; 
+    border-radius: 4px;
+    font-size: 0.875rem; 
+    white-space: nowrap;
+}
+
+/* Custom scrollbar for webkit browsers */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #374151;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #6b7280;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
+}
+
+/* Loading animation */
+.loading {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid #374151;
+    border-radius: 50%;
+    border-top-color: #3b82f6;
+    animation: spin 1s ease-in-out infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Button hover effects */
+button {
+    transition: all 0.2s ease-in-out;
+}
+
+button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* Input focus effects */
+input:focus, select:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+/* File input styling */
+input[type="file"]::-webkit-file-upload-button {
+    background: #3b82f6;
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+input[type="file"]::-webkit-file-upload-button:hover {
+    background: #2563eb;
+}
+
+/* 3D Viewer container */
+.viewer-container {
+    position: relative;
+    width: 100%;
+    height: 400px;
+    background: #0b1b24;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+/* Error message styling */
+.error-message {
+    background: #dc2626;
+    color: white;
+    padding: 12px;
+    border-radius: 6px;
+    margin: 8px 0;
+}
+
+/* Success message styling */
+.success-message {
+    background: #059669;
+    color: white;
+    padding: 12px;
+    border-radius: 6px;
+    margin: 8px 0;
+}
+
+/* Info message styling */
+.info-message {
+    background: #0ea5e9;
+    color: white;
+    padding: 12px;
+    border-radius: 6px;
+    margin: 8px 0;
+}
+
+/* Responsive grid adjustments */
+@media (max-width: 768px) {
+    .grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .max-w-5xl {
+        max-width: 100%;
+        padding: 0 1rem;
+    }
+}
+
+/* Dark theme enhancements */
+.bg-gray-800 {
+    background-color: #1f2937;
+}
+
+.bg-gray-900 {
+    background-color: #111827;
+}
+
+.text-gray-100 {
+    color: #f3f4f6;
+}
+
+.text-gray-400 {
+    color: #9ca3af;
+}
+
+.border-gray-600 {
+    border-color: #4b5563;
+}
+
+/* Animation for smooth transitions */
+.fade-in {
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
