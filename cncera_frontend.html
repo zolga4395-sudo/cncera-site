@@ -1,0 +1,1185 @@
+<!DOCTYPE html>
+<html lang="ru" class="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CNCera - AI-Powered CNC Analysis & G-code Generation</title>
+    <meta name="description" content="Современная система анализа 3D моделей и генерации G-кода с поддержкой ИИ">
+    <meta name="keywords" content="CNC, G-code, AI, 3D, manufacturing, фрезерование, ЧПУ">
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Three.js for 3D viewer -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/loaders/STLLoader.js"></script>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        /* Tailwind config */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+        }
+        
+        /* Custom styles */
+        .text-gradient {
+            background: linear-gradient(45deg, #2563eb, #7c3aed);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .glass {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .loading-spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid #374151;
+            border-top: 2px solid #2563eb;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .loading-dots::after {
+            content: '...';
+            animation: dots 1.5s steps(4, end) infinite;
+        }
+        
+        @keyframes dots {
+            0%, 20% { color: rgba(0,0,0,0); }
+            40% { color: white; }
+            60% { color: white; }
+            80%, 100% { color: white; }
+        }
+        
+        .chat-container {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .chat-message {
+            margin-bottom: 12px;
+            padding: 8px 12px;
+            border-radius: 8px;
+        }
+        
+        .chat-message.user {
+            background-color: #2563eb;
+            color: white;
+            margin-left: 20%;
+        }
+        
+        .chat-message.assistant {
+            background-color: #374151;
+            color: #e5e7eb;
+            margin-right: 20%;
+        }
+        
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-online { background-color: #10b981; }
+        .status-offline { background-color: #ef4444; }
+        .status-checking { background-color: #f59e0b; }
+        
+        .viewer-container {
+            background: #0b1b24;
+            border-radius: 8px;
+            min-height: 400px;
+            position: relative;
+        }
+        
+        .file-upload-area {
+            border: 2px dashed #4b5563;
+            border-radius: 8px;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .file-upload-area:hover,
+        .file-upload-area.dragover {
+            border-color: #2563eb;
+            background-color: rgba(37, 99, 235, 0.1);
+        }
+        
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: #1e293b;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 3px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100">
+    <!-- Header -->
+    <header class="bg-slate-800 border-b border-slate-700 shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between py-4">
+                <!-- Logo -->
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center space-x-2">
+                        <svg class="w-8 h-8 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                        </svg>
+                        <div>
+                            <h1 class="text-xl font-bold text-gradient">CNCera</h1>
+                            <p class="text-xs text-slate-400">AI-Powered CNC System</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Status Indicators -->
+                <div class="flex items-center space-x-4">
+                    <div class="flex items-center space-x-2">
+                        <div id="backend-status" class="status-indicator status-checking" title="Backend Status"></div>
+                        <span class="text-sm text-slate-400 hidden sm:inline">Backend</span>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <div id="ai-status" class="status-indicator status-checking" title="AI Status"></div>
+                        <span class="text-sm text-slate-400 hidden sm:inline">AI</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+        
+        <!-- Status Messages -->
+        <div id="status-messages" class="mb-6"></div>
+        
+        <!-- Main Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-6">
+            
+            <!-- Left Column: Main Functionality -->
+            <div class="lg:col-span-3 space-y-6">
+                
+                <!-- File Upload Section -->
+                <div class="bg-slate-800 p-6 rounded-lg shadow-lg">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <svg class="w-5 h-5 mr-2 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                        </svg>
+                        Загрузка и анализ файла
+                    </h2>
+                    
+                    <!-- File Upload Area -->
+                    <div id="file-upload-area" class="file-upload-area mb-4">
+                        <svg class="mx-auto h-12 w-12 text-slate-400 mb-4" stroke="currentColor" fill="none" viewBox="0 0 48 48">
+                            <path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+                        </svg>
+                        <div class="text-sm text-slate-300">
+                            <span class="font-medium text-blue-400 hover:text-blue-300 cursor-pointer" id="file-select-btn">Выберите файл</span>
+                            или перетащите его сюда
+                        </div>
+                        <p class="text-xs text-slate-500 mt-2">STEP, STP, STL до 100MB</p>
+                        <input type="file" id="file-input" class="hidden" accept=".step,.stp,.stl">
+                    </div>
+                    
+                    <!-- Upload Settings -->
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Единицы</label>
+                            <select id="units" class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                                <option value="auto">Auto (mm)</option>
+                                <option value="mm">mm</option>
+                                <option value="inch">inch</option>
+                                <option value="m">m</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">LinearDeflection</label>
+                            <input id="linear-deflection" type="number" step="0.01" value="0.1" min="0.01" max="10" 
+                                   class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">AngularDeflection (°)</label>
+                            <input id="angular-deflection" type="number" step="0.5" value="15" min="0.01" max="89" 
+                                   class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                        </div>
+                    </div>
+                    
+                    <!-- Upload Progress -->
+                    <div id="upload-progress" class="hidden mb-4">
+                        <div class="bg-slate-700 rounded-full h-2">
+                            <div id="progress-bar" class="bg-blue-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                        <div class="text-sm text-slate-400 mt-1" id="progress-text">Загрузка...</div>
+                    </div>
+                    
+                    <!-- Upload Button -->
+                    <div class="flex space-x-3">
+                        <button id="analyze-btn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition disabled:opacity-50" disabled>
+                            <span class="flex items-center">
+                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                                Анализировать
+                            </span>
+                        </button>
+                        <button id="ai-analyze-btn" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition disabled:opacity-50" disabled>
+                            <span class="flex items-center">
+                                <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                                </svg>
+                                ИИ Анализ
+                            </span>
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- 3D Viewer Section -->
+                <div class="bg-slate-800 p-6 rounded-lg shadow-lg">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <svg class="w-5 h-5 mr-2 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path>
+                        </svg>
+                        3D Просмотрщик
+                    </h2>
+                    <div id="viewer-container" class="viewer-container">
+                        <div class="flex items-center justify-center h-full text-slate-400">
+                            <div class="text-center">
+                                <svg class="mx-auto h-12 w-12 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path>
+                                </svg>
+                                <p>Загрузите 3D модель для просмотра</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Model Info -->
+                    <div id="model-info" class="mt-4 hidden">
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                            <div>
+                                <span class="text-slate-400">Размеры:</span>
+                                <span id="model-dimensions" class="text-slate-200 ml-2">-</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-400">Вершины:</span>
+                                <span id="model-vertices" class="text-slate-200 ml-2">-</span>
+                            </div>
+                            <div>
+                                <span class="text-slate-400">Грани:</span>
+                                <span id="model-faces" class="text-slate-200 ml-2">-</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- AI Analysis Results -->
+                    <div id="ai-analysis-result" class="mt-4 hidden">
+                        <h3 class="text-lg font-medium mb-2 text-purple-400">ИИ Анализ детали</h3>
+                        <div id="ai-analysis-content" class="bg-slate-700 p-4 rounded-lg text-sm"></div>
+                    </div>
+                </div>
+                
+                <!-- G-code Generator Section -->
+                <div class="bg-slate-800 p-6 rounded-lg shadow-lg">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <svg class="w-5 h-5 mr-2 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path>
+                        </svg>
+                        Генерация G-кода
+                    </h2>
+                    
+                    <!-- AI Parameter Generation -->
+                    <div class="mb-6 p-4 bg-purple-900/20 border border-purple-600/30 rounded-lg">
+                        <h3 class="text-lg font-medium mb-3 text-purple-400">ИИ Генерация параметров</h3>
+                        <div class="flex flex-col sm:flex-row gap-3">
+                            <input id="ai-requirements" type="text" placeholder="Опишите требования к обработке..." 
+                                   class="flex-1 bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                            <button id="ai-generate-params-btn" class="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition whitespace-nowrap disabled:opacity-50" disabled>
+                                Генерировать ИИ параметры
+                            </button>
+                        </div>
+                        <div id="ai-params-result" class="mt-3 hidden">
+                            <div class="bg-slate-700 p-3 rounded text-sm">
+                                <div id="ai-params-content"></div>
+                                <button id="apply-ai-params-btn" class="mt-2 bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700 transition">
+                                    Применить параметры
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- G-code Parameters -->
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Контроллер</label>
+                            <select id="controller" class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                                <option value="fanuc">Fanuc</option>
+                                <option value="siemens">Siemens</option>
+                                <option value="heidenhain">Heidenhain</option>
+                                <option value="gsk">GSK</option>
+                                <option value="mazak">Mazak</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Тип обработки</label>
+                            <select id="operation-type" class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                                <option value="milling">Фрезерная</option>
+                                <option value="roughing">Черновая</option>
+                                <option value="finishing">Чистовая</option>
+                                <option value="chamfer">Фаска</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Начало координат</label>
+                            <select id="origin" class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                                <option value="bbox_min">Нижний угол</option>
+                                <option value="bbox_center">Центр низа</option>
+                                <option value="bbox_top_center">Центр верха</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <!-- Tool Parameters -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Ø инструмента, мм</label>
+                            <input id="tool-diameter" type="number" value="3" step="0.1" min="0.1" max="50" 
+                                   class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Spindle, об/мин</label>
+                            <input id="spindle-speed" type="number" value="8000" step="100" min="1000" max="24000" 
+                                   class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Feed, мм/мин</label>
+                            <input id="feed-rate" type="number" value="300" step="10" min="10" max="5000" 
+                                   class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Plunge, мм/мин</label>
+                            <input id="plunge-rate" type="number" value="120" step="10" min="10" max="2000" 
+                                   class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                        </div>
+                    </div>
+                    
+                    <!-- Advanced Parameters -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Степовер</label>
+                            <input id="stepover" type="number" value="0.4" step="0.05" min="0.05" max="0.95" 
+                                   class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Stepdown Z, мм</label>
+                            <input id="stepdown" type="number" value="0" step="0.5" min="0" max="50" 
+                                   class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Clearance Z, мм</label>
+                            <input id="clearance" type="number" value="5" step="0.5" min="1" max="50" 
+                                   class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                        </div>
+                        <div>
+                            <label class="block text-sm text-slate-400 mb-1">Ось проходов</label>
+                            <select id="dir-axis" class="w-full bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                                <option value="X">X</option>
+                                <option value="Y">Y</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <!-- Generate Button -->
+                    <div class="flex space-x-4">
+                        <button id="generate-gcode-btn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition disabled:opacity-50" disabled>
+                            Сгенерировать G-код
+                        </button>
+                        <div id="gcode-status" class="flex items-center text-slate-400"></div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Right Column: AI Chat -->
+            <div class="space-y-6">
+                <div class="bg-slate-800 p-6 rounded-lg shadow-lg">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <svg class="w-5 h-5 mr-2 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                        </svg>
+                        ИИ Консультант
+                    </h2>
+                    
+                    <div id="chat-container" class="chat-container bg-slate-900 rounded-lg p-4 mb-4">
+                        <div class="chat-message assistant">
+                            <div class="text-sm text-slate-400 mb-1">ИИ Ассистент</div>
+                            <div>Привет! Я ваш ИИ консультант по CNC обработке. Могу помочь с выбором инструментов, параметрами резания, стратегиями обработки и технологическими вопросами. Задавайте любые вопросы!</div>
+                        </div>
+                    </div>
+                    
+                    <div class="flex space-x-2">
+                        <input type="text" id="chat-input" placeholder="Задайте вопрос о CNC обработке..." 
+                               class="flex-1 bg-slate-700 border border-slate-600 rounded-lg p-2 text-slate-100">
+                        <button id="send-chat-btn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">
+                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    
+                    <div class="mt-4 text-xs text-slate-500">
+                        <p>💡 <strong>Примеры вопросов:</strong></p>
+                        <ul class="list-disc list-inside mt-1 space-y-1">
+                            <li>"Какие параметры для фрезерования алюминия?"</li>
+                            <li>"Как выбрать скорость шпинделя для стали?"</li>
+                            <li>"Объясни стратегию waterline обработки"</li>
+                            <li>"Какой инструмент лучше для чистовой обработки?"</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // ==================== APPLICATION STATE ====================
+        
+        const AppState = {
+            backendUrl: 'http://127.0.0.1:5000/api',
+            currentModel: null,
+            partInfo: null,
+            aiGeneratedParams: null,
+            chatSessionId: `session_${Date.now()}`,
+            viewer: null,
+            scene: null,
+            camera: null,
+            renderer: null,
+            controls: null
+        };
+        
+        // ==================== UTILITY FUNCTIONS ====================
+        
+        function showMessage(message, type = 'info', duration = 5000) {
+            const container = document.getElementById('status-messages');
+            const messageEl = document.createElement('div');
+            
+            const colors = {
+                success: 'bg-green-600',
+                error: 'bg-red-600',
+                warning: 'bg-yellow-600',
+                info: 'bg-blue-600'
+            };
+            
+            messageEl.className = `${colors[type]} text-white px-4 py-3 rounded-lg mb-2 flex items-center justify-between`;
+            messageEl.innerHTML = `
+                <span>${message}</span>
+                <button onclick="this.parentElement.remove()" class="ml-4 text-white hover:text-gray-200">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            `;
+            
+            container.appendChild(messageEl);
+            
+            if (duration > 0) {
+                setTimeout(() => {
+                    if (messageEl.parentElement) {
+                        messageEl.remove();
+                    }
+                }, duration);
+            }
+        }
+        
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        function setButtonLoading(buttonId, loading, originalText = null) {
+            const button = document.getElementById(buttonId);
+            if (loading) {
+                button.disabled = true;
+                button.innerHTML = `<div class="loading-spinner mr-2"></div>Загрузка...`;
+            } else {
+                button.disabled = false;
+                button.innerHTML = originalText || button.textContent;
+            }
+        }
+        
+        // ==================== API FUNCTIONS ====================
+        
+        async function apiCall(endpoint, options = {}) {
+            const url = `${AppState.backendUrl}${endpoint}`;
+            const defaultOptions = {
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                ...options
+            };
+            
+            try {
+                const response = await fetch(url, defaultOptions);
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || `HTTP ${response.status}`);
+                }
+                
+                return data;
+            } catch (error) {
+                console.error('API call failed:', error);
+                throw error;
+            }
+        }
+        
+        async function uploadFile(file, progressCallback) {
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('units', document.getElementById('units').value);
+            formData.append('linear_deflection', document.getElementById('linear-deflection').value);
+            formData.append('angular_deflection_deg', document.getElementById('angular-deflection').value);
+            
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                
+                xhr.upload.addEventListener('progress', (event) => {
+                    if (event.lengthComputable && progressCallback) {
+                        const progress = Math.round((event.loaded * 100) / event.total);
+                        progressCallback(progress);
+                    }
+                });
+                
+                xhr.addEventListener('load', () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            const response = JSON.parse(xhr.responseText);
+                            resolve(response);
+                        } catch (error) {
+                            reject(new Error('Invalid response format'));
+                        }
+                    } else {
+                        reject(new Error(`HTTP ${xhr.status}: ${xhr.statusText}`));
+                    }
+                });
+                
+                xhr.addEventListener('error', () => {
+                    reject(new Error('Network error'));
+                });
+                
+                xhr.open('POST', `${AppState.backendUrl}/upload`);
+                xhr.send(formData);
+            });
+        }
+        
+        // ==================== BACKEND STATUS ====================
+        
+        async function checkBackendStatus() {
+            try {
+                const health = await apiCall('/health');
+                document.getElementById('backend-status').className = 'status-indicator status-online';
+                
+                const info = await apiCall('/info');
+                const aiAvailable = info.features?.ai_chat && info.features?.ai_analysis;
+                document.getElementById('ai-status').className = `status-indicator status-${aiAvailable ? 'online' : 'offline'}`;
+                
+                return true;
+            } catch (error) {
+                console.warn('Backend check failed:', error);
+                document.getElementById('backend-status').className = 'status-indicator status-offline';
+                document.getElementById('ai-status').className = 'status-indicator status-offline';
+                return false;
+            }
+        }
+        
+        // ==================== 3D VIEWER ====================
+        
+        function initViewer() {
+            const container = document.getElementById('viewer-container');
+            const width = container.clientWidth;
+            const height = container.clientHeight || 400;
+            
+            // Scene setup
+            AppState.scene = new THREE.Scene();
+            AppState.scene.background = new THREE.Color(0x0b1b24);
+            
+            // Camera setup
+            AppState.camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 10000);
+            AppState.camera.position.set(150, 120, 140);
+            
+            // Renderer setup
+            AppState.renderer = new THREE.WebGLRenderer({ antialias: true });
+            AppState.renderer.setSize(width, height);
+            container.innerHTML = '';
+            container.appendChild(AppState.renderer.domElement);
+            
+            // Controls
+            AppState.controls = new THREE.OrbitControls(AppState.camera, AppState.renderer.domElement);
+            AppState.controls.enableDamping = true;
+            AppState.controls.dampingFactor = 0.1;
+            
+            // Lighting
+            const light1 = new THREE.DirectionalLight(0xffffff, 0.8);
+            light1.position.set(1, 1, 1);
+            AppState.scene.add(light1);
+            
+            const light2 = new THREE.DirectionalLight(0xffffff, 0.5);
+            light2.position.set(-1, -1, -1);
+            AppState.scene.add(light2);
+            
+            const ambientLight = new THREE.AmbientLight(0x88aacc, 0.3);
+            AppState.scene.add(ambientLight);
+            
+            // Animation loop
+            function animate() {
+                requestAnimationFrame(animate);
+                AppState.controls.update();
+                AppState.renderer.render(AppState.scene, AppState.camera);
+            }
+            animate();
+        }
+        
+        function loadSTLModel(modelUrl) {
+            if (!window.THREE || !THREE.STLLoader) {
+                showMessage('3D просмотрщик недоступен', 'warning');
+                return;
+            }
+            
+            const loader = new THREE.STLLoader();
+            loader.load(modelUrl, (geometry) => {
+                // Clear existing models
+                AppState.scene.children = AppState.scene.children.filter(child => 
+                    child.type === 'DirectionalLight' || child.type === 'AmbientLight'
+                );
+                
+                // Create mesh
+                const material = new THREE.MeshPhongMaterial({ 
+                    color: 0x88aaff, 
+                    specular: 0x222222, 
+                    shininess: 30 
+                });
+                const mesh = new THREE.Mesh(geometry, material);
+                
+                // Center model
+                geometry.computeBoundingBox();
+                const box = geometry.boundingBox;
+                const center = box.getCenter(new THREE.Vector3());
+                const size = box.getSize(new THREE.Vector3());
+                
+                mesh.position.set(-center.x, -center.y, -center.z);
+                AppState.scene.add(mesh);
+                
+                // Add coordinate axes
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const axisLength = maxDim * 0.3;
+                
+                // X axis (red)
+                const xGeometry = new THREE.CylinderGeometry(axisLength * 0.01, axisLength * 0.01, axisLength, 8);
+                const xMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+                const xAxis = new THREE.Mesh(xGeometry, xMaterial);
+                xAxis.rotation.z = -Math.PI / 2;
+                xAxis.position.set(axisLength / 2, 0, size.z / 2 + axisLength * 0.1);
+                AppState.scene.add(xAxis);
+                
+                // Y axis (green)
+                const yGeometry = new THREE.CylinderGeometry(axisLength * 0.01, axisLength * 0.01, axisLength, 8);
+                const yMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+                const yAxis = new THREE.Mesh(yGeometry, yMaterial);
+                yAxis.position.set(0, axisLength / 2, size.z / 2 + axisLength * 0.1);
+                AppState.scene.add(yAxis);
+                
+                // Z axis (blue)
+                const zGeometry = new THREE.CylinderGeometry(axisLength * 0.01, axisLength * 0.01, axisLength, 8);
+                const zMaterial = new THREE.MeshBasicMaterial({ color: 0x0000ff });
+                const zAxis = new THREE.Mesh(zGeometry, zMaterial);
+                zAxis.rotation.x = Math.PI / 2;
+                zAxis.position.set(0, 0, size.z / 2 + axisLength * 0.6);
+                AppState.scene.add(zAxis);
+                
+                // Adjust camera
+                const distance = maxDim * 2;
+                AppState.camera.position.set(distance, distance * 0.8, distance * 0.8);
+                AppState.camera.lookAt(0, 0, 0);
+                AppState.controls.update();
+                
+                showMessage('3D модель загружена успешно', 'success');
+            }, undefined, (error) => {
+                console.error('STL loading failed:', error);
+                showMessage('Ошибка загрузки 3D модели', 'error');
+            });
+        }
+        
+        // ==================== FILE UPLOAD ====================
+        
+        function setupFileUpload() {
+            const fileInput = document.getElementById('file-input');
+            const fileSelectBtn = document.getElementById('file-select-btn');
+            const uploadArea = document.getElementById('file-upload-area');
+            const analyzeBtn = document.getElementById('analyze-btn');
+            
+            fileSelectBtn.addEventListener('click', () => fileInput.click());
+            
+            fileInput.addEventListener('change', (event) => {
+                const file = event.target.files[0];
+                if (file) {
+                    analyzeBtn.disabled = false;
+                    uploadArea.innerHTML = `
+                        <svg class="mx-auto h-8 w-8 text-green-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <p class="text-sm text-green-400 font-medium">${file.name}</p>
+                        <p class="text-xs text-slate-500">${formatFileSize(file.size)}</p>
+                    `;
+                }
+            });
+            
+            // Drag and drop
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            });
+            
+            uploadArea.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+            });
+            
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    fileInput.files = files;
+                    fileInput.dispatchEvent(new Event('change'));
+                }
+            });
+            
+            // Analyze button
+            analyzeBtn.addEventListener('click', handleFileAnalysis);
+        }
+        
+        async function handleFileAnalysis() {
+            const fileInput = document.getElementById('file-input');
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                showMessage('Выберите файл для анализа', 'warning');
+                return;
+            }
+            
+            const progressContainer = document.getElementById('upload-progress');
+            const progressBar = document.getElementById('progress-bar');
+            const progressText = document.getElementById('progress-text');
+            
+            setButtonLoading('analyze-btn', true);
+            progressContainer.classList.remove('hidden');
+            
+            try {
+                const result = await uploadFile(file, (progress) => {
+                    progressBar.style.width = `${progress}%`;
+                    progressText.textContent = `Загрузка: ${progress}%`;
+                });
+                
+                if (result.success) {
+                    AppState.currentModel = result;
+                    AppState.partInfo = result;
+                    
+                    // Update UI
+                    document.getElementById('model-info').classList.remove('hidden');
+                    if (result.geometry?.dimensions) {
+                        const dims = result.geometry.dimensions;
+                        document.getElementById('model-dimensions').textContent = 
+                            `${dims.length} × ${dims.width} × ${dims.height} мм`;
+                    }
+                    if (result.mesh_info) {
+                        document.getElementById('model-vertices').textContent = result.mesh_info.vertices || 0;
+                        document.getElementById('model-faces').textContent = result.mesh_info.faces || 0;
+                    }
+                    
+                    // Load 3D model
+                    if (result.model_path) {
+                        loadSTLModel(`${AppState.backendUrl}${result.model_path}`);
+                    }
+                    
+                    // Enable other buttons
+                    document.getElementById('ai-analyze-btn').disabled = false;
+                    document.getElementById('ai-generate-params-btn').disabled = false;
+                    document.getElementById('generate-gcode-btn').disabled = false;
+                    
+                    showMessage('Файл успешно проанализирован', 'success');
+                } else {
+                    throw new Error(result.error || 'Неизвестная ошибка');
+                }
+                
+            } catch (error) {
+                showMessage(`Ошибка анализа: ${error.message}`, 'error');
+            } finally {
+                setButtonLoading('analyze-btn', false, 'Анализировать');
+                progressContainer.classList.add('hidden');
+            }
+        }
+        
+        // ==================== AI FUNCTIONALITY ====================
+        
+        async function handleAIAnalysis() {
+            if (!AppState.currentModel) {
+                showMessage('Сначала загрузите и проанализируйте модель', 'warning');
+                return;
+            }
+            
+            setButtonLoading('ai-analyze-btn', true);
+            
+            try {
+                const result = await apiCall('/ai/analyze', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        model_path: AppState.currentModel.model_path
+                    })
+                });
+                
+                if (result.success) {
+                    const analysisDiv = document.getElementById('ai-analysis-result');
+                    const contentDiv = document.getElementById('ai-analysis-content');
+                    
+                    let analysisHtml = '';
+                    if (typeof result.analysis === 'object' && !result.analysis.error) {
+                        // Format structured analysis
+                        for (const [key, value] of Object.entries(result.analysis)) {
+                            if (key !== 'error') {
+                                analysisHtml += `<div class="mb-2"><strong class="text-purple-300">${key}:</strong> ${typeof value === 'string' ? value : JSON.stringify(value)}</div>`;
+                            }
+                        }
+                    } else {
+                        analysisHtml = result.analysis.analysis || result.analysis.error || 'Анализ завершен';
+                    }
+                    
+                    contentDiv.innerHTML = analysisHtml;
+                    analysisDiv.classList.remove('hidden');
+                    
+                    showMessage('ИИ анализ завершен', 'success');
+                } else {
+                    throw new Error(result.error || 'Ошибка ИИ анализа');
+                }
+                
+            } catch (error) {
+                showMessage(`Ошибка ИИ анализа: ${error.message}`, 'error');
+            } finally {
+                setButtonLoading('ai-analyze-btn', false, 'ИИ Анализ');
+            }
+        }
+        
+        async function handleAIParamGeneration() {
+            if (!AppState.currentModel) {
+                showMessage('Сначала загрузите модель', 'warning');
+                return;
+            }
+            
+            const requirements = document.getElementById('ai-requirements').value.trim();
+            if (!requirements) {
+                showMessage('Опишите требования к обработке', 'warning');
+                return;
+            }
+            
+            setButtonLoading('ai-generate-params-btn', true);
+            
+            try {
+                const result = await apiCall('/ai/generate-params', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        model_path: AppState.currentModel.model_path,
+                        requirements: requirements
+                    })
+                });
+                
+                if (result.success) {
+                    AppState.aiGeneratedParams = result.parameters;
+                    
+                    const resultDiv = document.getElementById('ai-params-result');
+                    const contentDiv = document.getElementById('ai-params-content');
+                    
+                    let paramsHtml = '<div class="text-green-400 font-medium mb-2">Рекомендуемые параметры:</div>';
+                    for (const [key, value] of Object.entries(result.parameters)) {
+                        if (key !== 'error' && key !== 'raw_response') {
+                            paramsHtml += `<div><strong>${key}:</strong> ${value}</div>`;
+                        }
+                    }
+                    
+                    contentDiv.innerHTML = paramsHtml;
+                    resultDiv.classList.remove('hidden');
+                    
+                    showMessage('ИИ параметры сгенерированы', 'success');
+                } else {
+                    throw new Error(result.error || 'Ошибка генерации параметров');
+                }
+                
+            } catch (error) {
+                showMessage(`Ошибка генерации параметров: ${error.message}`, 'error');
+            } finally {
+                setButtonLoading('ai-generate-params-btn', false, 'Генерировать ИИ параметры');
+            }
+        }
+        
+        function applyAIParams() {
+            if (!AppState.aiGeneratedParams) return;
+            
+            const params = AppState.aiGeneratedParams;
+            
+            if (params.tool_diameter) document.getElementById('tool-diameter').value = params.tool_diameter;
+            if (params.spindle_speed) document.getElementById('spindle-speed').value = params.spindle_speed;
+            if (params.feed_rate) document.getElementById('feed-rate').value = params.feed_rate;
+            if (params.plunge_rate) document.getElementById('plunge-rate').value = params.plunge_rate;
+            if (params.stepover) document.getElementById('stepover').value = params.stepover;
+            if (params.stepdown) document.getElementById('stepdown').value = params.stepdown;
+            if (params.operation_type) document.getElementById('operation-type').value = params.operation_type;
+            if (params.controller) document.getElementById('controller').value = params.controller;
+            
+            showMessage('ИИ параметры применены', 'success');
+        }
+        
+        // ==================== CHAT FUNCTIONALITY ====================
+        
+        async function sendChatMessage() {
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+            
+            if (!message) return;
+            
+            const chatContainer = document.getElementById('chat-container');
+            
+            // Add user message
+            const userMessage = document.createElement('div');
+            userMessage.className = 'chat-message user';
+            userMessage.innerHTML = `
+                <div class="text-sm text-slate-300 mb-1">Вы</div>
+                <div>${message}</div>
+            `;
+            chatContainer.appendChild(userMessage);
+            
+            // Clear input
+            input.value = '';
+            
+            // Add loading message
+            const loadingMessage = document.createElement('div');
+            loadingMessage.className = 'chat-message assistant';
+            loadingMessage.innerHTML = `
+                <div class="text-sm text-slate-400 mb-1">ИИ Ассистент</div>
+                <div class="loading-dots">Думаю</div>
+            `;
+            chatContainer.appendChild(loadingMessage);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+            
+            try {
+                const result = await apiCall('/ai/chat', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        message: message,
+                        session_id: AppState.chatSessionId,
+                        context: AppState.partInfo
+                    })
+                });
+                
+                // Remove loading message
+                chatContainer.removeChild(loadingMessage);
+                
+                if (result.success) {
+                    // Add AI response
+                    const aiMessage = document.createElement('div');
+                    aiMessage.className = 'chat-message assistant';
+                    aiMessage.innerHTML = `
+                        <div class="text-sm text-slate-400 mb-1">ИИ Ассистент</div>
+                        <div>${result.response.replace(/\n/g, '<br>')}</div>
+                    `;
+                    chatContainer.appendChild(aiMessage);
+                } else {
+                    throw new Error(result.error || 'Ошибка чата');
+                }
+                
+            } catch (error) {
+                // Remove loading message
+                if (loadingMessage.parentElement) {
+                    chatContainer.removeChild(loadingMessage);
+                }
+                
+                // Add error message
+                const errorMessage = document.createElement('div');
+                errorMessage.className = 'chat-message assistant';
+                errorMessage.innerHTML = `
+                    <div class="text-sm text-slate-400 mb-1">Ошибка</div>
+                    <div class="text-red-400">${error.message}</div>
+                `;
+                chatContainer.appendChild(errorMessage);
+            }
+            
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+        
+        // ==================== G-CODE GENERATION ====================
+        
+        async function generateGCode() {
+            if (!AppState.currentModel) {
+                showMessage('Сначала загрузите модель', 'warning');
+                return;
+            }
+            
+            const params = {
+                model_path: AppState.currentModel.model_path,
+                controller: document.getElementById('controller').value,
+                operation_type: document.getElementById('operation-type').value,
+                tool_diam: parseFloat(document.getElementById('tool-diameter').value),
+                spindle: parseInt(document.getElementById('spindle-speed').value),
+                feed: parseFloat(document.getElementById('feed-rate').value),
+                plunge: parseFloat(document.getElementById('plunge-rate').value),
+                stepover: parseFloat(document.getElementById('stepover').value),
+                stepdown: parseFloat(document.getElementById('stepdown').value),
+                clearance: parseFloat(document.getElementById('clearance').value),
+                origin: document.getElementById('origin').value,
+                dir_axis: document.getElementById('dir-axis').value
+            };
+            
+            setButtonLoading('generate-gcode-btn', true);
+            document.getElementById('gcode-status').innerHTML = '<div class="loading-spinner mr-2"></div>Генерация...';
+            
+            try {
+                const result = await apiCall('/gcode/generate', {
+                    method: 'POST',
+                    body: JSON.stringify(params)
+                });
+                
+                if (result.success) {
+                    document.getElementById('gcode-status').innerHTML = `
+                        <span class="text-green-400 mr-2">✓ Готово</span>
+                        <a href="${AppState.backendUrl}${result.download_url}" 
+                           class="text-blue-400 hover:text-blue-300 underline" 
+                           target="_blank">
+                           Скачать G-код (${result.controller.toUpperCase()} ${result.operation})
+                        </a>
+                    `;
+                    
+                    showMessage('G-код успешно сгенерирован', 'success');
+                } else {
+                    throw new Error(result.error || 'Ошибка генерации G-кода');
+                }
+                
+            } catch (error) {
+                document.getElementById('gcode-status').innerHTML = `<span class="text-red-400">Ошибка: ${error.message}</span>`;
+                showMessage(`Ошибка генерации G-кода: ${error.message}`, 'error');
+            } finally {
+                setButtonLoading('generate-gcode-btn', false, 'Сгенерировать G-код');
+            }
+        }
+        
+        // ==================== EVENT LISTENERS ====================
+        
+        function setupEventListeners() {
+            // File upload
+            setupFileUpload();
+            
+            // AI buttons
+            document.getElementById('ai-analyze-btn').addEventListener('click', handleAIAnalysis);
+            document.getElementById('ai-generate-params-btn').addEventListener('click', handleAIParamGeneration);
+            document.getElementById('apply-ai-params-btn').addEventListener('click', applyAIParams);
+            
+            // Chat
+            document.getElementById('send-chat-btn').addEventListener('click', sendChatMessage);
+            document.getElementById('chat-input').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') sendChatMessage();
+            });
+            
+            // G-code generation
+            document.getElementById('generate-gcode-btn').addEventListener('click', generateGCode);
+            
+            // Keyboard shortcuts
+            document.addEventListener('keydown', (e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
+                    e.preventDefault();
+                    document.getElementById('file-input').click();
+                }
+                if ((e.ctrlKey || e.metaKey) && e.key === 'g') {
+                    e.preventDefault();
+                    if (AppState.currentModel) {
+                        generateGCode();
+                    }
+                }
+            });
+        }
+        
+        // ==================== INITIALIZATION ====================
+        
+        async function initApp() {
+            console.log('🚀 Initializing CNCera Frontend');
+            
+            // Check backend status
+            const backendOk = await checkBackendStatus();
+            if (!backendOk) {
+                showMessage('Backend сервер недоступен. Убедитесь, что он запущен на порту 5000.', 'error', 0);
+            }
+            
+            // Initialize 3D viewer if Three.js is available
+            if (window.THREE) {
+                initViewer();
+            } else {
+                showMessage('3D библиотеки недоступны. Некоторые функции могут быть ограничены.', 'warning');
+            }
+            
+            // Setup event listeners
+            setupEventListeners();
+            
+            // Periodic backend status check
+            setInterval(checkBackendStatus, 30000);
+            
+            console.log('✅ CNCera Frontend initialized');
+        }
+        
+        // Start application when DOM is ready
+        document.addEventListener('DOMContentLoaded', initApp);
+        
+        // Handle window resize for 3D viewer
+        window.addEventListener('resize', () => {
+            if (AppState.renderer && AppState.camera) {
+                const container = document.getElementById('viewer-container');
+                const width = container.clientWidth;
+                const height = container.clientHeight || 400;
+                
+                AppState.camera.aspect = width / height;
+                AppState.camera.updateProjectionMatrix();
+                AppState.renderer.setSize(width, height);
+            }
+        });
+        
+    </script>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ru" class="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CNCera - AI-Powered CNC Analysis & G-code Generation</title>
+    <meta name="description" content="Современная система анализа 3D моделей и генерации G-кода с поддержкой ИИ">
+    <meta name="keywords" content="CNC, G-code, AI, 3D, manufacturing, фрезерование, ЧПУ">
+    <meta name="author" content="CNCera Team">
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://cncera.com/">
+    <meta property="og:title" content="CNCera - AI-Powered CNC System">
+    <meta property="og:description" content="Анализ 3D моделей и генерация G-кода с помощью ИИ">
+    
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="https://cncera.com/">
+    <meta property="twitter:title" content="CNCera - AI-Powered CNC System">
+    <meta property="twitter:description" content="Анализ 3D моделей и генерация G-кода с помощью ИИ">
+    
+    <!-- Preload critical resources -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Three.js CDN for 3D viewer -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/controls/OrbitControls.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/loaders/STLLoader.js" defer></script>
+    
+    <style>
+        /* Critical CSS for loading screen */
+        .loading-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #0b1b24;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            transition: opacity 0.5s ease-out;
+        }
+        
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 3px solid #1f2937;
+            border-top: 3px solid #2563eb;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* Hide scrollbar during loading */
+        body.loading {
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans loading">
+    <!-- Loading Screen -->
+    <div id="loading-screen" class="loading-screen">
+        <div class="text-center">
+            <div class="loading-spinner mx-auto mb-4"></div>
+            <div class="text-lg font-medium text-blue-400">Загрузка CNCera...</div>
+            <div class="text-sm text-gray-400 mt-2">AI-Powered CNC System</div>
+        </div>
+    </div>
+    
+    <!-- App Container -->
+    <div id="app" class="min-h-screen">
+        <!-- Content will be injected here by webpack -->
+    </div>
+    
+    <!-- Error Boundary -->
+    <div id="error-boundary" class="hidden fixed inset-0 bg-red-900 bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-gray-800 p-6 rounded-lg shadow-xl max-w-md mx-4">
+            <div class="flex items-center mb-4">
+                <svg class="w-6 h-6 text-red-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+                <h3 class="text-lg font-semibold text-red-400">Ошибка приложения</h3>
+            </div>
+            <p class="text-gray-300 mb-4" id="error-message">Произошла непредвиденная ошибка. Пожалуйста, перезагрузите страницу.</p>
+            <div class="flex space-x-3">
+                <button onclick="window.location.reload()" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition">
+                    Перезагрузить
+                </button>
+                <button onclick="document.getElementById('error-boundary').classList.add('hidden')" class="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700 transition">
+                    Закрыть
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Global error handler
+        window.addEventListener('error', function(e) {
+            console.error('Global error:', e.error);
+            document.getElementById('error-message').textContent = e.error?.message || 'Неизвестная ошибка';
+            document.getElementById('error-boundary').classList.remove('hidden');
+        });
+        
+        window.addEventListener('unhandledrejection', function(e) {
+            console.error('Unhandled promise rejection:', e.reason);
+            document.getElementById('error-message').textContent = e.reason?.message || 'Ошибка выполнения запроса';
+            document.getElementById('error-boundary').classList.remove('hidden');
+        });
+        
+        // Hide loading screen when app is ready
+        window.addEventListener('DOMContentLoaded', function() {
+            setTimeout(() => {
+                const loadingScreen = document.getElementById('loading-screen');
+                if (loadingScreen) {
+                    loadingScreen.style.opacity = '0';
+                    setTimeout(() => {
+                        loadingScreen.style.display = 'none';
+                        document.body.classList.remove('loading');
+                    }, 500);
+                }
+            }, 1000);
+        });
+    </script>
+</body>
+</html>
