@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CNCera Test</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white p-8">
+    <h1 class="text-3xl font-bold mb-4">CNCera API Test</h1>
+    
+    <div class="space-y-4">
+        <div>
+            <h2 class="text-xl font-semibold mb-2">API Endpoints Test</h2>
+            <div class="space-y-2">
+                <button onclick="testAPI('/upload', 'POST')" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded">Test /upload</button>
+                <button onclick="testAPI('/generate_gcode', 'POST')" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded">Test /generate_gcode</button>
+                <button onclick="testAPI('/models/test.stl', 'GET')" class="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded">Test /models/</button>
+                <button onclick="testAPI('/download_gcode', 'GET')" class="bg-yellow-600 hover:bg-yellow-700 px-4 py-2 rounded">Test /download_gcode</button>
+                <button onclick="testAPI('/download_results', 'GET')" class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded">Test /download_results</button>
+            </div>
+        </div>
+        
+        <div>
+            <h2 class="text-xl font-semibold mb-2">Console Log</h2>
+            <div id="console" class="bg-black p-4 rounded h-64 overflow-y-auto font-mono text-sm"></div>
+        </div>
+    </div>
+
+    <script>
+        function log(message) {
+            const console = document.getElementById('console');
+            const time = new Date().toLocaleTimeString();
+            console.innerHTML += `[${time}] ${message}<br>`;
+            console.scrollTop = console.scrollHeight;
+        }
+
+        async function testAPI(endpoint, method) {
+            log(`Testing ${method} ${endpoint}...`);
+            
+            try {
+                const options = {
+                    method: method,
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                };
+                
+                if (method === 'POST') {
+                    options.body = JSON.stringify({ test: true });
+                }
+                
+                const response = await fetch(endpoint, options);
+                const status = response.status;
+                const statusText = response.statusText;
+                
+                log(`Response: ${status} ${statusText}`);
+                
+                if (status === 200 || status === 201) {
+                    const data = await response.json();
+                    log(`Success: ${JSON.stringify(data, null, 2)}`);
+                } else {
+                    log(`Error: ${status} ${statusText}`);
+                }
+                
+            } catch (error) {
+                log(`Network Error: ${error.message}`);
+            }
+        }
+
+        // Test on load
+        window.addEventListener('load', () => {
+            log('Page loaded. Ready to test API endpoints.');
+        });
+    </script>
+</body>
+</html>

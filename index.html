@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="ru" class="scroll-smooth" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CNCera v2.0 - Advanced Manufacturing Interface</title>
+  
+  <!-- Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+  
+  <!-- TailwindCSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Three.js и компоненты -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/loaders/STLLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/mrdoob/three.js@r128/examples/js/controls/OrbitControls.js"></script>
+  
+  <!-- Debug script -->
+  <script src="debug.js"></script>
+  
+  <style>
+    :root {
+      --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      --secondary-gradient: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+      --success-gradient: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+      --warning-gradient: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
+      --dark-surface: rgba(15, 23, 42, 0.95);
+      --glass-surface: rgba(30, 41, 59, 0.8);
+      --neon-blue: #00e6ff;
+      --neon-purple: #a855f7;
+      --neon-green: #00ff88;
+    }
+
+    * {
+      font-family: 'Inter', sans-serif;
+    }
+
+    .mono {
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    body {
+      background: #0f172a;
+      background-image: 
+        radial-gradient(circle at 20% 80%, rgba(120, 119, 198, 0.1) 0%, transparent 50%),
+        radial-gradient(circle at 80% 20%, rgba(255, 119, 198, 0.1) 0%, transparent 50%),
+        radial-gradient(circle at 40% 40%, rgba(120, 219, 255, 0.1) 0%, transparent 50%);
+      min-height: 100vh;
+    }
+
+    .glass-card {
+      background: rgba(30, 41, 59, 0.6);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(148, 163, 184, 0.1);
+      box-shadow: 
+        0 20px 25px -5px rgba(0, 0, 0, 0.1),
+        0 10px 10px -5px rgba(0, 0, 0, 0.04),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    }
+
+    .btn-primary {
+      background: var(--primary-gradient);
+      border: none;
+      color: white;
+      padding: 12px 24px;
+      border-radius: 12px;
+      font-weight: 600;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 4px 15px 0 rgba(102, 126, 234, 0.4);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 25px 0 rgba(102, 126, 234, 0.6);
+    }
+
+    .btn-success {
+      background: var(--success-gradient);
+      border: none;
+      color: white;
+      padding: 12px 24px;
+      border-radius: 12px;
+      font-weight: 600;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 15px 0 rgba(79, 172, 254, 0.4);
+    }
+
+    .input-tech {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      border-radius: 12px;
+      padding: 12px 16px;
+      color: #e2e8f0;
+      font-weight: 500;
+      transition: all 0.3s ease;
+      backdrop-filter: blur(10px);
+    }
+
+    .input-tech:focus {
+      outline: none;
+      border-color: var(--neon-blue);
+      box-shadow: 0 0 0 3px rgba(0, 230, 255, 0.1), 0 0 20px rgba(0, 230, 255, 0.2);
+      background: rgba(15, 23, 42, 0.95);
+    }
+
+    .status-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 8px;
+      animation: pulse 2s infinite;
+    }
+
+    .status-online {
+      background: var(--neon-green);
+      box-shadow: 0 0 10px var(--neon-green);
+    }
+
+    .status-warning {
+      background: #fbbf24;
+      box-shadow: 0 0 10px #fbbf24;
+    }
+
+    .status-error {
+      background: #ef4444;
+      box-shadow: 0 0 10px #ef4444;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    #previewCanvas {
+      border-radius: 16px;
+      box-shadow: 
+        0 25px 50px -12px rgba(0, 0, 0, 0.25),
+        inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    }
+
+    .hover-lift {
+      transition: transform 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    .hover-lift:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.2);
+    }
+  </style>
+</head>
+<body>
+  <div class="container mx-auto max-w-7xl p-6 relative z-10">
+    <!-- Header -->
+    <header class="mb-12">
+      <div class="glass-card rounded-3xl p-8 text-center">
+        <div class="mb-6">
+          <h1 class="text-6xl font-bold bg-gradient-to-r from-blue-400 via-purple-500 to-cyan-400 bg-clip-text text-transparent mb-4">
+            CNCera v2.0
+          </h1>
+          <p class="text-xl text-slate-300 font-light">Advanced Manufacturing Intelligence Platform</p>
+          <div class="mt-6 flex justify-center items-center space-x-6">
+            <div class="flex items-center">
+              <div class="status-indicator status-online"></div>
+              <span class="text-sm font-medium text-slate-300">System Online</span>
+            </div>
+            <div class="flex items-center">
+              <div class="status-indicator status-online"></div>
+              <span class="text-sm font-medium text-slate-300">AI Processing Ready</span>
+            </div>
+            <div class="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full text-xs font-bold">
+              v2.0.0 SECURE
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <div class="grid grid-cols-1 xl:grid-cols-3 gap-8">
+      <!-- Left Panel: File Processing -->
+      <div class="xl:col-span-1 space-y-6">
+        
+        <!-- Upload Section -->
+        <div class="glass-card rounded-2xl p-6 hover-lift">
+          <div class="flex items-center mb-6">
+            <div class="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center mr-4">
+              <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+              </svg>
+            </div>
+            <div>
+              <h2 class="text-xl font-semibold text-white">File Processing</h2>
+              <p class="text-sm text-slate-400">Upload and analyze CAD models</p>
+            </div>
+          </div>
+          
+          <form id="uploadForm" enctype="multipart/form-data" class="space-y-4">
+            <!-- File Drop Zone -->
+            <div class="border-2 border-dashed border-slate-600 rounded-xl p-8 text-center hover:border-cyan-400 transition-all duration-300" id="dropZone">
+              <div class="mb-4">
+                <svg class="w-12 h-12 text-slate-400 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                </svg>
+                <p class="text-sm text-slate-400">Drag & drop files or click to browse</p>
+                <p class="text-xs text-slate-500 mt-1">STL, STEP, STP • Max 50MB</p>
+              </div>
+              <input type="file" name="file" accept=".step,.stp,.stl" required class="hidden" id="fileInput"/>
+              <button type="button" class="btn-primary" onclick="document.getElementById('fileInput').click()">
+                Select File
+              </button>
+            </div>
+            
+            <!-- Processing Parameters -->
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-slate-300 mb-2">Units</label>
+                <select name="units" class="input-tech w-full">
+                  <option value="auto">Auto (mm)</option>
+                  <option value="mm">Millimeters</option>
+                  <option value="inch">Inches</option>
+                  <option value="m">Meters</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-300 mb-2">Precision</label>
+                <input type="number" name="linear_deflection" value="0.1" step="0.01" min="0.01" max="10" class="input-tech w-full"/>
+              </div>
+            </div>
+            
+            <button type="submit" class="btn-primary w-full" id="uploadBtn">
+              <span id="uploadBtnText">Process File</span>
+            </button>
+          </form>
+          
+          <div id="uploadStatus" class="mt-4 text-sm"></div>
+        </div>
+
+        <!-- G-code Generation -->
+        <div class="glass-card rounded-2xl p-6 hover-lift">
+          <div class="flex items-center mb-4">
+            <div class="w-10 h-10 bg-gradient-to-br from-purple-500 to-pink-600 rounded-lg flex items-center justify-center mr-3">
+              <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+              </svg>
+            </div>
+            <div>
+              <h3 class="text-lg font-semibold text-white">CNC Programming</h3>
+              <p class="text-xs text-slate-400">Generate optimized G-code</p>
+            </div>
+          </div>
+          
+          <form id="gcodeForm" class="space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+              <div>
+                <label class="block text-sm font-medium text-slate-300 mb-2">Controller</label>
+                <select name="controller" class="input-tech w-full">
+                  <option value="fanuc">Fanuc</option>
+                  <option value="siemens">Siemens</option>
+                  <option value="heidenhain">Heidenhain</option>
+                  <option value="gsk">GSK</option>
+                  <option value="mazak">Mazak</option>
+                </select>
+              </div>
+              <div>
+                <label class="block text-sm font-medium text-slate-300 mb-2">Operation</label>
+                <select name="operation_type" class="input-tech w-full" id="operationType">
+                  <option value="milling">Milling</option>
+                  <option value="turning">Turning</option>
+                  <option value="drilling">Drilling</option>
+                  <option value="roughing">Roughing</option>
+                  <option value="finishing">Finishing</option>
+                </select>
+              </div>
+            </div>
+            
+            <!-- Tool Parameters -->
+            <div class="space-y-3">
+              <div class="grid grid-cols-3 gap-3">
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Tool ⌀</label>
+                  <input type="number" name="tool" value="3" step="0.1" min="0.1" max="50" class="input-tech w-full text-sm"/>
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Feed</label>
+                  <input type="number" name="feed" value="300" step="10" min="10" max="5000" class="input-tech w-full text-sm"/>
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">RPM</label>
+                  <input type="number" name="spindle" value="8000" step="100" min="1000" max="24000" class="input-tech w-full text-sm"/>
+                </div>
+              </div>
+              
+              <!-- Dynamic Parameters -->
+              <div id="millingParams" class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Stepover</label>
+                  <input type="number" name="stepover" value="0.4" step="0.05" min="0.05" max="0.95" class="input-tech w-full text-sm"/>
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Clearance</label>
+                  <input type="number" name="clearance" value="5" step="0.5" min="1" max="50" class="input-tech w-full text-sm"/>
+                </div>
+              </div>
+              
+              <div id="turningParams" class="grid grid-cols-2 gap-3 hidden">
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Workpiece ⌀</label>
+                  <input type="number" name="workpiece_diameter" value="50" step="1" min="1" max="500" class="input-tech w-full text-sm"/>
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Cut Depth</label>
+                  <input type="number" name="cut_depth" value="1" step="0.1" min="0.1" max="10" class="input-tech w-full text-sm"/>
+                </div>
+              </div>
+              
+              <div id="drillingParams" class="grid grid-cols-2 gap-3 hidden">
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Drill ⌀</label>
+                  <input type="number" name="drill_diameter" value="6" step="0.1" min="0.5" max="50" class="input-tech w-full text-sm"/>
+                </div>
+                <div>
+                  <label class="block text-xs font-medium text-slate-400 mb-1">Depth</label>
+                  <input type="number" name="drill_depth" value="10" step="0.5" min="1" max="100" class="input-tech w-full text-sm"/>
+                </div>
+              </div>
+            </div>
+            
+            <button type="submit" class="btn-success w-full" id="gcodeBtn" disabled>
+              <span id="gcodeBtnText">Generate G-Code</span>
+            </button>
+          </form>
+          
+          <div id="gcodeStatus" class="mt-4 text-sm"></div>
+        </div>
+      </div>
+
+      <!-- Center & Right Panel: 3D Viewer -->
+      <div class="xl:col-span-2 space-y-6">
+        
+        <!-- 3D Viewer -->
+        <div class="glass-card rounded-2xl p-6 hover-lift">
+          <div class="flex justify-between items-center mb-6">
+            <div class="flex items-center">
+              <div class="w-10 h-10 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-lg flex items-center justify-center mr-3">
+                <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/>
+                </svg>
+              </div>
+              <div>
+                <h3 class="text-lg font-semibold text-white">3D Visualization</h3>
+                <p class="text-xs text-slate-400">Interactive model viewer</p>
+              </div>
+            </div>
+            
+            <!-- Viewer Controls -->
+            <div class="flex space-x-2">
+              <button class="btn-primary text-sm px-3 py-2" id="resetViewBtn" disabled>
+                Reset
+              </button>
+              <button class="btn-primary text-sm px-3 py-2" id="toggleWireframeBtn" disabled>
+                Wire
+              </button>
+            </div>
+          </div>
+          
+          <!-- 3D Canvas -->
+          <div class="relative">
+            <canvas id="previewCanvas" class="w-full h-[500px] rounded-xl"></canvas>
+            
+            <!-- Loading Overlay -->
+            <div id="loadingOverlay" class="absolute inset-0 bg-black bg-opacity-50 rounded-xl flex items-center justify-center hidden">
+              <div class="text-center">
+                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-cyan-400 mx-auto mb-4"></div>
+                <p class="text-white font-medium">Loading 3D Model...</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Global variables
+    let uploadedModelPath = null;
+    let currentModelInfo = null;
+    let renderer, scene, camera, controls;
+    let currentMesh = null;
+    let isWireframe = false;
+    let animationId = null;
+
+    // Initialize system on load
+    document.addEventListener('DOMContentLoaded', function() {
+      initializeSystem();
+      setupEventListeners();
+    });
+
+    function initializeSystem() {
+      // Initialize Three.js
+      if (typeof THREE !== 'undefined') {
+        console.log('Initializing Three.js...');
+        const canvas = document.getElementById('previewCanvas');
+        
+        if (!canvas) {
+          console.error('Canvas element not found!');
+          return;
+        }
+        
+        try {
+          renderer = new THREE.WebGLRenderer({ 
+            canvas: canvas, 
+            antialias: true,
+            alpha: false 
+          });
+          renderer.setSize(canvas.clientWidth, canvas.clientHeight);
+          renderer.setClearColor(0x0f172a, 1);
+          renderer.shadowMap.enabled = true;
+          renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+          scene = new THREE.Scene();
+          
+          camera = new THREE.PerspectiveCamera(
+            75, 
+            canvas.clientWidth / canvas.clientHeight, 
+            0.1, 
+            10000
+          );
+          camera.position.set(100, 100, 100);
+
+          // Lighting setup
+          const ambientLight = new THREE.AmbientLight(0x404040, 0.4);
+          scene.add(ambientLight);
+
+          const mainLight = new THREE.DirectionalLight(0xffffff, 1);
+          mainLight.position.set(100, 100, 50);
+          mainLight.castShadow = true;
+          scene.add(mainLight);
+
+          // Controls
+          if (typeof THREE.OrbitControls !== 'undefined') {
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.enableZoom = true;
+            controls.enablePan = true;
+            console.log('OrbitControls initialized');
+          } else {
+            console.warn('OrbitControls not available');
+          }
+
+          animate();
+          console.log('Three.js initialized successfully');
+        } catch (error) {
+          console.error('Error initializing Three.js:', error);
+        }
+      } else {
+        console.error('Three.js not loaded!');
+      }
+    }
+
+    function setupEventListeners() {
+      // Upload form
+      document.getElementById('uploadForm').addEventListener('submit', handleFileUpload);
+      
+      // G-code form
+      document.getElementById('gcodeForm').addEventListener('submit', handleGcodeGeneration);
+      
+      // Operation type change
+      document.getElementById('operationType').addEventListener('change', toggleOperationParams);
+      
+      // 3D viewer controls
+      document.getElementById('resetViewBtn').addEventListener('click', resetView);
+      document.getElementById('toggleWireframeBtn').addEventListener('click', toggleWireframe);
+      
+      // File input and drag & drop
+      setupFileDropzone();
+    }
+
+    function setupFileDropzone() {
+      const dropZone = document.getElementById('dropZone');
+      const fileInput = document.getElementById('fileInput');
+      
+      ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, preventDefaults, false);
+      });
+      
+      function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+      
+      ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => {
+          dropZone.classList.add('border-cyan-400');
+        });
+      });
+      
+      ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => {
+          dropZone.classList.remove('border-cyan-400');
+        });
+      });
+      
+      dropZone.addEventListener('drop', (e) => {
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+          fileInput.files = files;
+        }
+      });
+    }
+
+    async function handleFileUpload(e) {
+      e.preventDefault();
+      
+      const uploadBtn = document.getElementById('uploadBtn');
+      const uploadBtnText = document.getElementById('uploadBtnText');
+      const uploadStatus = document.getElementById('uploadStatus');
+      
+      if (!uploadBtn || !uploadBtnText || !uploadStatus) {
+        console.error('Required elements not found for file upload');
+        return;
+      }
+      
+      uploadBtn.disabled = true;
+      uploadBtnText.textContent = 'Processing...';
+      
+      try {
+        const formData = new FormData(e.target);
+        
+        console.log('Uploading file...');
+        console.log('Form data entries:', Array.from(formData.entries()));
+        
+        // ИСПРАВЛЕНИЕ: Используем правильный endpoint
+        const response = await fetch('/upload', {
+          method: 'POST',
+          body: formData
+        });
+        
+        console.log('Upload response status:', response.status);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        console.log('Upload result:', result);
+        
+        if (result.success) {
+          uploadedModelPath = result.model_path;
+          currentModelInfo = result;
+          
+          // Enable controls
+          ['gcodeBtn', 'resetViewBtn', 'toggleWireframeBtn'].forEach(id => {
+            const element = document.getElementById(id);
+            if (element) {
+              element.disabled = false;
+            }
+          });
+          
+          uploadStatus.innerHTML = createSuccessMessage('File processed successfully', result.model_path);
+          
+        } else {
+          uploadStatus.innerHTML = createErrorMessage(result.error || 'Unknown error occurred');
+        }
+        
+      } catch (error) {
+        console.error('Upload error:', error);
+        uploadStatus.innerHTML = createErrorMessage('Network error: ' + error.message);
+      } finally {
+        uploadBtn.disabled = false;
+        uploadBtnText.textContent = 'Process File';
+      }
+    }
+
+    async function handleGcodeGeneration(e) {
+      e.preventDefault();
+      
+      if (!uploadedModelPath) {
+        showNotification('Please upload a model first', 'warning');
+        return;
+      }
+      
+      const gcodeBtn = document.getElementById('gcodeBtn');
+      const gcodeBtnText = document.getElementById('gcodeBtnText');
+      const gcodeStatus = document.getElementById('gcodeStatus');
+      
+      if (!gcodeBtn || !gcodeBtnText || !gcodeStatus) {
+        console.error('Required elements not found for G-code generation');
+        return;
+      }
+      
+      gcodeBtn.disabled = true;
+      gcodeBtnText.textContent = 'Generating...';
+      
+      try {
+        const formData = new FormData(e.target);
+        const params = Object.fromEntries(formData.entries());
+        params.model_path = uploadedModelPath;
+        
+        // Convert numeric fields
+        ['tool', 'feed', 'spindle', 'stepover', 'clearance', 'workpiece_diameter', 'cut_depth', 'drill_diameter', 'drill_depth'].forEach(field => {
+          if (params[field]) {
+            params[field] = parseFloat(params[field]);
+          }
+        });
+        
+        console.log('Generating G-code with params:', params);
+        
+        // ИСПРАВЛЕНИЕ: Используем правильный endpoint
+        const response = await fetch('/generate_gcode', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(params)
+        });
+        
+        console.log('G-code response status:', response.status);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        console.log('G-code result:', result);
+        
+        if (result.success) {
+          gcodeStatus.innerHTML = createSuccessMessage(
+            'G-code generated successfully',
+            result.gcode_path,
+            `${result.controller?.toUpperCase() || 'Unknown'} ${result.operation || 'Unknown'}`
+          );
+          
+          showNotification('G-code ready for download', 'success');
+          
+        } else {
+          gcodeStatus.innerHTML = createErrorMessage(result.error || 'Unknown error occurred');
+        }
+        
+      } catch (error) {
+        console.error('G-code generation error:', error);
+        gcodeStatus.innerHTML = createErrorMessage('Network error: ' + error.message);
+      } finally {
+        gcodeBtn.disabled = false;
+        gcodeBtnText.textContent = 'Generate G-Code';
+      }
+    }
+
+    function toggleOperationParams() {
+      const operationType = document.getElementById('operationType').value;
+      const millingParams = document.getElementById('millingParams');
+      const turningParams = document.getElementById('turningParams');
+      const drillingParams = document.getElementById('drillingParams');
+      
+      // Hide all
+      [millingParams, turningParams, drillingParams].forEach(el => {
+        el.classList.add('hidden');
+      });
+      
+      // Show relevant
+      switch(operationType) {
+        case 'milling':
+        case 'roughing':
+        case 'finishing':
+          millingParams.classList.remove('hidden');
+          break;
+        case 'turning':
+          turningParams.classList.remove('hidden');
+          break;
+        case 'drilling':
+          drillingParams.classList.remove('hidden');
+          break;
+      }
+    }
+
+    function resetView() {
+      if (camera && controls && currentMesh) {
+        camera.position.set(100, 100, 100);
+        controls.target.set(0, 0, 0);
+        controls.update();
+        showNotification('View reset', 'info');
+      }
+    }
+
+    function toggleWireframe() {
+      if (currentMesh) {
+        isWireframe = !isWireframe;
+        currentMesh.material.wireframe = isWireframe;
+      }
+    }
+
+    function animate() {
+      animationId = requestAnimationFrame(animate);
+      
+      if (controls) {
+        controls.update();
+      }
+      
+      if (renderer && scene && camera) {
+        renderer.render(scene, camera);
+      }
+    }
+
+    function createSuccessMessage(message, downloadUrl = null, subtitle = null) {
+      return `
+        <div class="flex items-center p-4 bg-green-900 bg-opacity-50 border border-green-500 rounded-lg">
+          <svg class="w-5 h-5 text-green-400 mr-3" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/>
+          </svg>
+          <div class="flex-1">
+            <div class="text-green-400 font-medium">${message}</div>
+            ${subtitle ? `<div class="text-green-300 text-sm">${subtitle}</div>` : ''}
+            ${downloadUrl ? `<a href="${downloadUrl}" target="_blank" class="text-green-300 hover:text-green-200 text-sm underline">Download</a>` : ''}
+          </div>
+        </div>
+      `;
+    }
+
+    function createErrorMessage(message) {
+      return `
+        <div class="flex items-center p-4 bg-red-900 bg-opacity-50 border border-red-500 rounded-lg">
+          <svg class="w-5 h-5 text-red-400 mr-3" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/>
+          </svg>
+          <div class="text-red-400 font-medium">${message}</div>
+        </div>
+      `;
+    }
+
+    function showNotification(message, type = 'info') {
+      const notification = document.createElement('div');
+      notification.className = `fixed top-4 right-4 p-4 rounded-lg shadow-lg z-50 transition-all duration-300 ${
+        type === 'success' ? 'bg-green-600' :
+        type === 'warning' ? 'bg-yellow-600' :
+        type === 'error' ? 'bg-red-600' : 'bg-blue-600'
+      } text-white`;
+      
+      notification.innerHTML = `
+        <div class="flex items-center">
+          <span class="mr-3">${message}</span>
+          <button onclick="this.parentElement.parentElement.remove()" class="text-white hover:text-gray-200">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+      `;
+      
+      document.body.appendChild(notification);
+      
+      setTimeout(() => {
+        notification.style.opacity = '0';
+        notification.style.transform = 'translateX(100%)';
+        setTimeout(() => notification.remove(), 300);
+      }, 3000);
+    }
+  </script>
+</body>
+</html>
