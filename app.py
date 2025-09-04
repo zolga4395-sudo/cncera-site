@@ -1532,7 +1532,7 @@ def index():
         logger.warning(f"Failed to read ui/index.html: {e}")
     
     # Fallback HTML if ui/index.html is not available
-    # Old fallback HTML removed - using simple fallback below
+    return """
     <!DOCTYPE html>
     <html lang="ru">
     <head>
@@ -1767,37 +1767,6 @@ def index():
 
         <script src="/static/js/app.js"></script>
         <script src="/static/js/ncviewer.js"></script>
-    </body>
-    </html>
-    """
-    # Simple fallback if ui/index.html is not available
-    return """
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>CNCera - 3D Analysis & G-code Generation</title>
-        <link rel="stylesheet" href="/static/css/app.css">
-    </head>
-    <body class="bg-gray-900 text-gray-100 font-sans p-6">
-        <div class="container">
-            <div class="card">
-                <h1 class="text-2xl font-semibold mb-4">CNCera - 3D Analysis & G-code Generation</h1>
-                <p class="text-gray-400 mb-4">UI template not found. Please ensure ui/index.html exists.</p>
-                <div class="mb-4">
-                    <h2 class="text-lg font-medium mb-2">Available API Endpoints:</h2>
-                    <ul class="list-disc list-inside text-sm text-gray-300">
-                        <li>POST /upload - Upload and analyze 3D files</li>
-                        <li>POST /generate_gcode - Generate G-code</li>
-                        <li>GET /materials - Get materials list</li>
-                        <li>GET /tools - Get tools list</li>
-                        <li>GET /postprocessors - Get postprocessors list</li>
-                        <li>GET /healthz - Health check</li>
-                    </ul>
-                </div>
-            </div>
-        </div>
     </body>
     </html>
     """
