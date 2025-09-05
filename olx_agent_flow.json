@@ -1,0 +1,130 @@
+{
+  "name": "OLX Agent → Telegram ↔ OpenAI ↔ Google Sheets",
+  "flow": [
+    {
+      "id": 1,
+      "module": "telegram-bot:watchUpdates",
+      "version": 1,
+      "parameters": {},
+      "mapper": {
+        "allowedUpdates": [
+          "message"
+        ]
+      },
+      "metadata": {
+        "designer": { "x": 0, "y": 0 },
+        "parameters": [
+          { "name": "__IMTCONN__", "type": "account:telegram-bot", "label": "Connection" }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "module": "http:makeRequest",
+      "version": 1,
+      "parameters": {},
+      "mapper": {
+        "method": "post",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "headers": [
+          { "name": "Authorization", "value": "Bearer YOUR_OPENAI_API_KEY" },
+          { "name": "Content-Type", "value": "application/json" }
+        ],
+        "bodyType": "raw",
+        "body": {
+          "model": "gpt-4o-mini",
+          "temperature": 0.3,
+          "max_tokens": 600,
+          "messages": [
+            {
+              "role": "system",
+              "content": "Ты кратко и по делу отвечаешь как продавец на OLX. Если вопрос неясен — уточни 1–2 пункта."
+            },
+            {
+              "role": "user",
+              "content": "{{1.Message.Text}}"
+            }
+          ]
+        },
+        "parseResponse": true
+      },
+      "metadata": { "designer": { "x": 300, "y": 0 } }
+    },
+    {
+      "id": 3,
+      "module": "telegram-bot:sendMessage",
+      "version": 1,
+      "parameters": {},
+      "mapper": {
+        "chatId": "{{1.Message.Chat.ID}}",
+        "text": "{{ifempty(2.choices[0].message.content; \"Временно не могу ответить. Попробуйте ещё раз.\")}}"
+      },
+      "metadata": {
+        "designer": { "x": 600, "y": 0 },
+        "parameters": [
+          { "name": "__IMTCONN__", "type": "account:telegram-bot", "label": "Connection" }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "module": "google-sheets:addRow",
+      "version": 2,
+      "parameters": {},
+      "mapper": {
+        "from": "drive",
+        "mode": "selectByPath",
+        "sheetId": "0",
+        "spreadsheetId": "YOUR_SPREADSHEET_ID",
+        "includesHeaders": true,
+        "insertDataOption": "INSERT_ROWS",
+        "valueInputOption": "USER_ENTERED",
+        "insertUnformatted": false,
+        "values": {
+          "0": "{{now}}",
+          "1": "{{1.Message.Chat.ID}}",
+          "2": "{{ifempty(1.Message.From.Username; \"\")}}",
+          "3": "{{ifempty(1.Message.From.First name; \"\")}}",
+          "4": "{{1.Message.Text}}",
+          "5": "{{ifempty(2.choices[0].message.content; \"\")}}",
+          "6": "{{2.model}}",
+          "7": "{{2.usage.prompt_tokens}}",
+          "8": "{{2.usage.completion_tokens}}",
+          "9": "{{2.usage.total_tokens}}"
+        }
+      },
+      "metadata": {
+        "designer": { "x": 900, "y": 0 },
+        "parameters": [
+          { "name": "__IMTCONN__", "type": "account:google", "label": "Connection" }
+        ],
+        "restore": {
+          "expect": {
+            "from": { "label": "My Drive" },
+            "mode": { "label": "Select by path" },
+            "includesHeaders": { "label": "Yes" }
+          }
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "instant": true,
+    "version": 1,
+    "scenario": {
+      "roundtrips": 1,
+      "maxErrors": 3,
+      "autoCommit": true,
+      "autoCommitTriggerLast": true,
+      "sequential": false,
+      "slots": null,
+      "confidential": false,
+      "dataloss": false,
+      "dlq": false,
+      "freshVariables": false
+    },
+    "designer": { "orphans": [] },
+    "zone": "eu2.make.com",
+    "notes": []
+  }
+}
