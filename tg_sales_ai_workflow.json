@@ -1,0 +1,163 @@
+{
+  "name": "TG Sales Mini + AI (5 nodes)",
+  "nodes": [
+    {
+      "id": "tg_trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1,
+      "position": [200, 300],
+      "parameters": {
+        "updates": ["message"],
+        "additionalFields": { 
+          "download": false 
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "__REPLACE_WITH_TG_CRED_ID__",
+          "name": "YOUR_TELEGRAM_CREDENTIAL_NAME"
+        }
+      }
+    },
+    {
+      "id": "fn_router",
+      "name": "Function: FSM & Router",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "notesInFlow": true,
+      "notes": "Команды: /start, /order, /report (только ADMIN). Этапы: contact → need_type → need_text → confirm. Если вне этапов и текст свободный — needs_ai=true.",
+      "parameters": {
+        "functionCode": "// === SETTINGS ===\nconst ADMIN_CHAT_ID = 'ADMIN_CHAT_ID'; // <-- замените\n\n// === INPUT ===\nconst msg = $json.body?.message || {};\nconst chatId = String(msg.chat?.id || '');\nconst text = (msg.text || '').trim();\nconst from = msg.from || {};\nconst userName = [from.first_name||'', from.last_name||''].join(' ').trim() || (from.username ? '@'+from.username : '');\nconst isAdmin = (chatId === String(ADMIN_CHAT_ID));\n\n// === MEMORY (workflow static) ===\nconst store = this.getWorkflowStaticData('global');\nstore.sessions = store.sessions || {}; // per chat\nstore.orders = store.orders || [];     // array\nconst sess = store.sessions[chatId] || { stage: 'idle', client_name:'', client_contact:'', need_type:'', need_text:'' };\nconst saveSess = () => { store.sessions[chatId] = sess; };\n\n// === OUTPUT HELPERS ===\nconst items = [];\nconst pushUser = (text)=> items.push({ json: { mode: 'plain', chatId, text } });\nconst pushAdmin = (text)=> items.push({ json: { mode: 'plain', chatId: String(ADMIN_CHAT_ID), text } });\nconst pushAI = (prompt, sys)=> items.push({ json: { mode: 'ai', chatId, prompt, system: sys } });\n\n// === COMMANDS ===\nif (text === '/start') {\n  sess.stage = 'idle'; sess.client_name = userName; saveSess();\n  pushUser('Привет! Я помогу оформить заказ на ИИ-агента или аналитику.\\nНапишите /order или просто: \"Сделать заказ\".');\n  return items;\n}\n\nif (text === '/report') {\n  if (!isAdmin) { pushUser('Команда недоступна.'); return items; }\n  const rows = [...store.orders].slice(-10).reverse();\n  if (!rows.length) { pushAdmin('Пока без заявок.'); return items; }\n  const lines = rows.map(r => `#${r.order_id} | ${r.need_type} | ${r.client_contact} | ${r.ts.slice(0,16).replace('T',' ')}`);\n  pushAdmin('Последние заявки:\\n' + lines.join('\\n'));\n  return items;\n}\n\nif (text === '/order' || text.toLowerCase() === 'сделать заказ') {\n  sess.stage = 'contact'; sess.client_name = userName; saveSess();\n  pushUser('Шаг 1/3. Как к вам обращаться и контакт (телефон/Telegram/@)?');\n  return items;\n}\n\n// === FSM ===\nswitch (sess.stage) {\n  case 'contact': {\n    if (text.length < 5) { pushUser('Пожалуйста, укажите имя и контакт (минимум 5 символов).'); return items; }\n    sess.client_contact = text; sess.stage = 'need_type'; saveSess();\n    pushUser('Шаг 2/3. Что нужно: Агент продаж / Поддержка / Бухгалтер / Аналитика? Можно выбрать и дописать своими словами.');\n    return items;\n  }\n  case 'need_type': {\n    const t = text.toLowerCase();\n    if (t.includes('продаж')) sess.need_type = 'Агент продаж';\n    else if (t.includes('поддерж')) sess.need_type = 'Поддержка';\n    else if (t.includes('бух')) sess.need_type = 'Бухгалтер';\n    else if (t.includes('аналит')) sess.need_type = 'Аналитика';\n    else sess.need_type = text; // свободный ввод\n    sess.stage = 'need_text'; saveSess();\n    pushUser('Шаг 3/3. Опишите задачу в 1–2 предложениях (что должно делать решение).');\n    return items;\n  }\n  case 'need_text': {\n    if (text.length < 5) { pushUser('Добавьте чуть подробностей (минимум 5 символов).'); return items; }\n    sess.need_text = text; sess.stage = 'confirm'; saveSess();\n    pushUser('Проверьте данные:\\n' + `Контакт: ${sess.client_contact}\\n` + `Задача: ${sess.need_type} — ${sess.need_text}\\n` + 'Если всё верно — напишите: **ПОДТВЕРЖДАЮ**. Если нужно исправить — пришлите правку.');\n    return items;\n  }\n  case 'confirm': {\n    if (text.toLowerCase() === 'подтверждаю') {\n      const id = 'ORD-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + Math.random().toString(36).slice(2,6).toUpperCase();\n      const order = { order_id: id, chat_id: chatId, client_name: sess.client_name, client_contact: sess.client_contact, need_type: sess.need_type, need_text: sess.need_text, ts: new Date().toISOString() };\n      store.orders.push(order);\n      pushUser(`Готово! Заказ №${id} принят. Менеджер свяжется в ближайшее время.`);\n      pushAdmin(`🔔 НОВЫЙ ЗАКАЗ\\nID: ${order.order_id}\\nКонтакт: ${order.client_contact}\\nЗадача: ${order.need_type} — ${order.need_text}\\nВремя: ${order.ts}`);\n      store.sessions[chatId] = { stage:'idle', client_name:'', client_contact:'', need_type:'', need_text:'' };\n      return items;\n    }\n    // правка → назад на need_text\n    sess.stage = 'need_text'; saveSess();\n    pushUser('Приняла правку. Напишите окончательный вариант задачи (1–2 предложения).');\n    return items;\n  }\n}\n\n// === FALLBACK TO AI ===\n// Если мы не в процессе заказа: отвечаем через AI-агента с контекстом\nconst sys = 'Ты — вежливый и деловой ассистент по внедрению ИИ-агентов и аналитики. Отвечай кратко, по делу, предлагай оформить заказ командой /order, если есть явный запрос. Избегай обещаний, если не уверена. Тон дружелюбный, профессиональный.';\nconst ctx = `Контекст: стадия=${sess.stage}; контакт=${sess.client_contact||'-'}; выбранное=${sess.need_type||'-'}; описание=${sess.need_text||'-'}`;\nconst prompt = `${ctx}\\n\\nСообщение пользователя: ${text}`;\npushAI(prompt, sys);\nreturn items;"
+      }
+    },
+    {
+      "id": "if_ai",
+      "name": "IF: needs_ai?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "conditions": {
+          "string": [
+            { 
+              "value1": "={{$json.mode}}", 
+              "operation": "equal", 
+              "value2": "ai" 
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ai_chat",
+      "name": "OpenAI Chat (AI Agent)",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 3,
+      "position": [940, 240],
+      "parameters": {
+        "resource": "chat",
+        "operation": "create",
+        "modelId": "gpt-3.5-turbo",
+        "messages": {
+          "systemMessage": "={{$json.system}}",
+          "assistantRole": "assistant",
+          "text": "={{$json.prompt}}"
+        },
+        "additionalFields": {
+          "temperature": 0.4,
+          "maxTokens": 350
+        }
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "__REPLACE_WITH_OAI_CRED_ID__",
+          "name": "YOUR_OPENAI_CREDENTIAL_NAME"
+        }
+      }
+    },
+    {
+      "id": "tg_send",
+      "name": "Telegram Send",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [1180, 300],
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "={{$json.text || $json.data?.choices?.[0]?.message?.content || $json.choices?.[0]?.message?.content || '...'}}"
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "__REPLACE_WITH_TG_CRED_ID__",
+          "name": "YOUR_TELEGRAM_CREDENTIAL_NAME"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "tg_trigger": {
+      "main": [
+        [
+          {
+            "node": "fn_router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fn_router": {
+      "main": [
+        [
+          {
+            "node": "if_ai",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "if_ai": {
+      "main": [
+        [
+          {
+            "node": "ai_chat",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "tg_send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ai_chat": {
+      "main": [
+        [
+          {
+            "node": "tg_send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2024-01-01T00:00:00.000Z",
+  "versionId": "1",
+  "id": "tg-sales-ai-workflow",
+  "active": false,
+  "createdAt": "2024-01-01T00:00:00.000Z"
+}
