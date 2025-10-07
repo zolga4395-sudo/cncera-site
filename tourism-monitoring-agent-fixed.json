@@ -1,0 +1,511 @@
+{
+  "name": "Агент Мониторинга Туров - Исправленная Версия",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 10 * * *"
+            }
+          ]
+        }
+      },
+      "name": "0. Cron: Ежедневный запуск (10:00)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ],
+      "id": "node-0"
+    },
+    {
+      "parameters": {
+        "authentication": "generic",
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "✅ Агент Мониторинга Конкурентов запущен.\n🕐 Время: {{ $now.toFormat('dd.MM.yyyy HH:mm') }}\n\nНачинаю проверку сайтов конкурентов..."
+      },
+      "name": "1. Telegram: Уведомление о старте",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [
+        460,
+        180
+      ],
+      "id": "node-1",
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIALS_ID",
+          "name": "Telegram Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "getAll",
+        "databaseId": "={{ $env.NOTION_DATABASE_ID }}",
+        "returnAll": true,
+        "options": {}
+      },
+      "name": "2. Notion: Загрузить список конкурентов",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2,
+      "position": [
+        460,
+        420
+      ],
+      "id": "node-2",
+      "credentials": {
+        "notionApi": {
+          "id": "NOTION_CREDENTIALS_ID",
+          "name": "Notion API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.properties['URL конкурента']?.url || $json.properties['URL']?.url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": true,
+              "maxRedirects": 5
+            }
+          }
+        }
+      },
+      "name": "3. HTTP: Загрузить HTML страницы",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        680,
+        420
+      ],
+      "id": "node-3",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Парсинг HTML страницы конкурента\nconst cheerio = require('cheerio');\n\n// Получаем все входящие данные\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  try {\n    // Получаем HTML из HTTP Request\n    const htmlResponse = item.json.data || item.json.body || '';\n    \n    if (!htmlResponse) {\n      results.push({\n        json: {\n          ...item.json,\n          parserError: true,\n          errorMessage: 'HTML не загружен',\n          newPrice: null,\n          newDescription: 'Ошибка загрузки HTML'\n        }\n      });\n      continue;\n    }\n    \n    const $ = cheerio.load(htmlResponse);\n    \n    // Получаем данные из Notion\n    const notionProps = item.json.properties || {};\n    const pageId = item.json.id;\n    const title = notionProps.Name?.title?.[0]?.plain_text || \n                  notionProps.Название?.title?.[0]?.plain_text || \n                  notionProps.title?.title?.[0]?.plain_text || \n                  'Без названия';\n    const url = notionProps['URL конкурента']?.url || notionProps['URL']?.url || '';\n    const previousPrice = notionProps['Последняя цена']?.number || null;\n    const previousStatus = notionProps['Последний статус']?.rich_text?.[0]?.plain_text || 'Данных нет';\n    \n    // === ВАЖНО: НАСТРОЙТЕ СЕЛЕКТОРЫ ПОД ВАШИ САЙТЫ ===\n    // Пример селекторов (замените на реальные):\n    let newPrice = null;\n    let newDescription = 'Парсинг не удался';\n    let parserError = false;\n    \n    try {\n      // Вариант 1: Попытка найти цену по разным селекторам\n      const priceSelectors = [\n        '.price',\n        '.tour-price',\n        '[data-price]',\n        '.price-value',\n        'span.price',\n        'div.price'\n      ];\n      \n      let priceText = '';\n      for (const selector of priceSelectors) {\n        priceText = $(selector).first().text().trim();\n        if (priceText) break;\n      }\n      \n      // Извлекаем цену (только цифры)\n      if (priceText) {\n        const priceMatch = priceText.match(/\\d+[\\s\\d]*/g);\n        if (priceMatch) {\n          newPrice = parseInt(priceMatch[0].replace(/\\s/g, ''));\n        }\n      }\n      \n      // Вариант 2: Попытка найти описание\n      const descriptionSelectors = [\n        '.description',\n        '.tour-description',\n        '[data-description]',\n        '.content',\n        'article',\n        '.tour-info'\n      ];\n      \n      for (const selector of descriptionSelectors) {\n        newDescription = $(selector).first().text().trim();\n        if (newDescription && newDescription.length > 50) break;\n      }\n      \n      // Ограничиваем длину описания\n      if (newDescription && newDescription.length > 500) {\n        newDescription = newDescription.substring(0, 500) + '...';\n      }\n      \n      if (!newDescription || newDescription.length < 10) {\n        newDescription = 'Описание не найдено на странице';\n        parserError = true;\n      }\n      \n      if (!newPrice) {\n        parserError = true;\n      }\n      \n    } catch (parseError) {\n      parserError = true;\n      console.error('Ошибка парсинга:', parseError.message);\n    }\n    \n    results.push({\n      json: {\n        // Новые данные\n        newPrice: newPrice,\n        newDescription: newDescription,\n        parserError: parserError,\n        errorMessage: parserError ? 'Не удалось извлечь данные. Проверьте CSS-селекторы.' : null,\n        \n        // Старые данные\n        previousPrice: previousPrice,\n        previousStatus: previousStatus,\n        \n        // Метаданные\n        pageId: pageId,\n        title: title,\n        url: url,\n        \n        // Дата проверки\n        checkDate: new Date().toISOString()\n      }\n    });\n    \n  } catch (error) {\n    console.error('Критическая ошибка обработки item:', error);\n    results.push({\n      json: {\n        ...item.json,\n        parserError: true,\n        errorMessage: error.message,\n        newPrice: null,\n        newDescription: 'Критическая ошибка обработки'\n      }\n    });\n  }\n}\n\nreturn results;"
+      },
+      "name": "4. Code: Парсинг и извлечение данных",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        420
+      ],
+      "id": "node-4"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.parserError }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "5. IF: Парсинг успешен?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        420
+      ],
+      "id": "node-5"
+    },
+    {
+      "parameters": {
+        "authentication": "generic",
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "🚨 ОШИБКА ПАРСИНГА!\n\n📌 **Тур:** {{ $json.title }}\n🔗 **URL:** {{ $json.url }}\n\n⚠️ **Причина:** {{ $json.errorMessage || 'Не удалось извлечь данные' }}\n\n💡 **Решение:** Проверьте CSS-селекторы в ноде \"4. Code: Парсинг\". Возможно, конкурент изменил структуру сайта."
+      },
+      "name": "6. Telegram: Уведомление об ошибке парсинга",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [
+        1340,
+        580
+      ],
+      "id": "node-6",
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIALS_ID",
+          "name": "Telegram Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "claude-3-5-sonnet-20241022",
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 500
+        },
+        "text": "Ты — рыночный аналитик в сфере туров по Камчатке. Твоя задача — сравнить старые и новые данные конкурента и дать **краткое** заключение о ключевом изменении.\n\n**Сравниваемые данные:**\n- Название тура: {{ $json.title }}\n- Старая цена: {{ $json.previousPrice || 'Не было данных' }} ₽\n- Новая цена: {{ $json.newPrice || 'Не найдена' }} ₽\n- Старое описание: {{ $json.previousStatus }}\n- Новое описание: {{ $json.newDescription }}\n\n**Формат ответа (ТОЛЬКО ТЕКСТ, без markdown):**\n1. Если цена изменилась: 'ЦЕНА ИЗМЕНИЛАСЬ: [детали, например: Снижена на 15000 руб с 85000 до 70000]'\n2. Если описание/маршрут сильно изменился: 'МАРШРУТ ИЗМЕНИЛСЯ: [ключевые изменения]'\n3. Если изменения незначительны: 'БЕЗ ИЗМЕНЕНИЙ'\n4. Если данных недостаточно: 'ПЕРВАЯ ПРОВЕРКА: [краткое описание]'\n\nОтветь одной строкой."
+      },
+      "name": "7. AI: Анализ изменений (Claude)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        260
+      ],
+      "id": "node-7",
+      "credentials": {
+        "anthropicApi": {
+          "id": "ANTHROPIC_CREDENTIALS_ID",
+          "name": "Anthropic API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Расчет разницы цен и подготовка данных для отчета\nconst items = $input.all();\nconst results = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const item = items[i].json;\n  \n  // Получаем анализ от AI (если есть)\n  const aiAnalysis = item.response || item.text || item.content || 'Анализ не выполнен';\n  \n  const newPrice = item.newPrice;\n  const previousPrice = item.previousPrice;\n  \n  let priceDifference = 0;\n  let percentageChange = 0;\n  let emoji = '🟡';\n  let priceChangeText = 'Нет данных о цене';\n  \n  if (newPrice !== null && previousPrice !== null) {\n    priceDifference = newPrice - previousPrice;\n    percentageChange = previousPrice !== 0 ? ((priceDifference / previousPrice) * 100) : 0;\n    \n    if (priceDifference > 0) {\n      emoji = '📈';\n      priceChangeText = `Повышение на ${priceDifference} ₽`;\n    } else if (priceDifference < 0) {\n      emoji = '📉';\n      priceChangeText = `Снижение на ${Math.abs(priceDifference)} ₽`;\n    } else {\n      emoji = '🟰';\n      priceChangeText = 'Без изменений';\n    }\n  } else if (newPrice !== null && previousPrice === null) {\n    emoji = '🆕';\n    priceChangeText = 'Первая проверка - данные зафиксированы';\n  } else if (newPrice === null) {\n    emoji = '❌';\n    priceChangeText = 'Цена не найдена';\n  }\n  \n  results.push({\n    json: {\n      ...item,\n      aiAnalysis: aiAnalysis,\n      priceDifference: priceDifference,\n      percentageChange: percentageChange.toFixed(2),\n      priceEmoji: emoji,\n      priceChangeText: priceChangeText\n    }\n  });\n}\n\nreturn results;"
+      },
+      "name": "8. Code: Расчет разницы цен",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        260
+      ],
+      "id": "node-8"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "condition-1",
+              "leftValue": "={{ $json.aiAnalysis }}",
+              "rightValue": "БЕЗ ИЗМЕНЕНИЙ",
+              "operator": {
+                "type": "string",
+                "operation": "notContains",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "condition-2",
+              "leftValue": "={{ $json.priceDifference }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "name": "9. IF: Обнаружено важное изменение?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        260
+      ],
+      "id": "node-9"
+    },
+    {
+      "parameters": {
+        "authentication": "generic",
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "💥 **ВАЖНОЕ ИЗМЕНЕНИЕ У КОНКУРЕНТА!**\n\n📌 **Тур:** [{{ $json.title }}]({{ $json.url }})\n\n🤖 **Анализ AI:**\n{{ $json.aiAnalysis }}\n\n💰 **Сравнение цен:**\n{{ $json.priceEmoji }} {{ $json.priceChangeText }}\n{% if $json.previousPrice and $json.newPrice %}\n• Было: {{ $json.previousPrice }} ₽\n• Стало: {{ $json.newPrice }} ₽\n• Изменение: {{ $json.percentageChange }}%\n{% endif %}\n\n🕐 Проверено: {{ $now.toFormat('dd.MM.yyyy HH:mm') }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "name": "10. Telegram: Отчет об изменении",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [
+        2000,
+        160
+      ],
+      "id": "node-10",
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIALS_ID",
+          "name": "Telegram Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "page",
+        "operation": "update",
+        "pageId": "={{ $json.pageId }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Последняя цена",
+              "numberValue": "={{ $json.newPrice }}"
+            },
+            {
+              "key": "Последний статус",
+              "textContent": "={{ $json.newDescription }}"
+            },
+            {
+              "key": "Дата проверки",
+              "dateValue": "={{ $now.toISO() }}"
+            },
+            {
+              "key": "Статус парсинга",
+              "textContent": "={{ $json.parserError ? 'Ошибка' : 'ОК' }}"
+            }
+          ]
+        }
+      },
+      "name": "11. Notion: Обновить данные в базе",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        420
+      ],
+      "id": "node-11",
+      "credentials": {
+        "notionApi": {
+          "id": "NOTION_CREDENTIALS_ID",
+          "name": "Notion API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Подсчет статистики по всем проверкам\nconst items = $input.all();\n\nconst stats = {\n  total: items.length,\n  errors: 0,\n  changes: 0,\n  noChanges: 0,\n  priceIncreases: 0,\n  priceDecreases: 0\n};\n\nitems.forEach(item => {\n  const data = item.json;\n  \n  if (data.parserError) {\n    stats.errors++;\n  } else if (data.priceDifference > 0) {\n    stats.changes++;\n    stats.priceIncreases++;\n  } else if (data.priceDifference < 0) {\n    stats.changes++;\n    stats.priceDecreases++;\n  } else {\n    stats.noChanges++;\n  }\n});\n\nreturn [{ json: stats }];"
+      },
+      "name": "12. Code: Подсчет статистики",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        180
+      ],
+      "id": "node-12"
+    },
+    {
+      "parameters": {
+        "authentication": "generic",
+        "resource": "message",
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "✅ **МОНИТОРИНГ ЗАВЕРШЕН**\n\n📊 **Статистика:**\n• Всего проверено: {{ $json.total }}\n• Найдено изменений: {{ $json.changes }}\n{% if $json.priceIncreases > 0 %}• 📈 Цены выросли: {{ $json.priceIncreases }}\n{% endif %}{% if $json.priceDecreases > 0 %}• 📉 Цены снизились: {{ $json.priceDecreases }}\n{% endif %}• Без изменений: {{ $json.noChanges }}\n{% if $json.errors > 0 %}• ⚠️ Ошибки парсинга: {{ $json.errors }}\n{% endif %}\n🕐 Время: {{ $now.toFormat('dd.MM.yyyy HH:mm') }}\n\nСледующая проверка: завтра в 10:00"
+      },
+      "name": "13. Telegram: Итоговый отчет",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [
+        2440,
+        180
+      ],
+      "id": "node-13",
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_CREDENTIALS_ID",
+          "name": "Telegram Account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "0. Cron: Ежедневный запуск (10:00)": {
+      "main": [
+        [
+          {
+            "node": "1. Telegram: Уведомление о старте",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "2. Notion: Загрузить список конкурентов",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Notion: Загрузить список конкурентов": {
+      "main": [
+        [
+          {
+            "node": "3. HTTP: Загрузить HTML страницы",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. HTTP: Загрузить HTML страницы": {
+      "main": [
+        [
+          {
+            "node": "4. Code: Парсинг и извлечение данных",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Code: Парсинг и извлечение данных": {
+      "main": [
+        [
+          {
+            "node": "5. IF: Парсинг успешен?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. IF: Парсинг успешен?": {
+      "main": [
+        [
+          {
+            "node": "7. AI: Анализ изменений (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "6. Telegram: Уведомление об ошибке парсинга",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Telegram: Уведомление об ошибке парсинга": {
+      "main": [
+        [
+          {
+            "node": "11. Notion: Обновить данные в базе",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. AI: Анализ изменений (Claude)": {
+      "main": [
+        [
+          {
+            "node": "8. Code: Расчет разницы цен",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. Code: Расчет разницы цен": {
+      "main": [
+        [
+          {
+            "node": "9. IF: Обнаружено важное изменение?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. IF: Обнаружено важное изменение?": {
+      "main": [
+        [
+          {
+            "node": "10. Telegram: Отчет об изменении",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "11. Notion: Обновить данные в базе",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10. Telegram: Отчет об изменении": {
+      "main": [
+        [
+          {
+            "node": "11. Notion: Обновить данные в базе",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11. Notion: Обновить данные в базе": {
+      "main": [
+        [
+          {
+            "node": "12. Code: Подсчет статистики",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12. Code: Подсчет статистики": {
+      "main": [
+        [
+          {
+            "node": "13. Telegram: Итоговый отчет",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-10-07T00:00:00.000Z",
+  "versionId": "1"
+}
