@@ -1,0 +1,499 @@
+{
+  "name": "Competitor Price Scraper - MAIN",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 10 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger-main",
+      "name": "Cron Trigger (Daily 10:00)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "chatId": "={{ $env.DUMMY_TELEGRAM_CHAT_ID }}",
+        "text": "✅ Мониторинг конкурентов запущен. Ожидайте отчет."
+      },
+      "id": "telegram-start-notification",
+      "name": "Telegram Start Notification",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [
+        460,
+        300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_API",
+          "name": "Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "databasePage",
+        "operation": "getAll",
+        "databaseId": "={{ $env.DUMMY_NOTION_DB_ID }}",
+        "returnAll": true,
+        "options": {}
+      },
+      "id": "notion-get-competitors",
+      "name": "Notion Get Competitors",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2,
+      "position": [
+        680,
+        300
+      ],
+      "credentials": {
+        "notionApi": {
+          "id": "NOTION_API",
+          "name": "Notion"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.properties['URL конкурента'].url }}",
+        "options": {
+          "redirect": {
+            "redirect": {
+              "followRedirects": true,
+              "maxRedirects": 5
+            }
+          },
+          "retry": {
+            "retry": {
+              "maxRetries": 3,
+              "retryOnHttpStatusCodes": "429,500,502,503,504"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "http-fetch-competitor-page",
+      "name": "HTTP Fetch Competitor Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract price and description using cheerio\nconst cheerio = require('cheerio');\n\nconst items = [];\n\nfor (const item of $input.all()) {\n  try {\n    const html = item.json.body || item.json.data;\n    const $ = cheerio.load(html);\n    \n    // Extract data using CSS selectors from env or defaults\n    const priceSelector = process.env.DUMMY_CSS_SELECTOR_PRICE || '.price';\n    const descriptionSelector = process.env.DUMMY_CSS_SELECTOR_DESCRIPTION || '.description';\n    \n    const priceText = $(priceSelector).first().text().trim();\n    const descriptionText = $(descriptionSelector).first().text().trim();\n    \n    // Parse price (remove currency symbols and convert to number)\n    const newPrice = priceText ? parseFloat(priceText.replace(/[^0-9.,]/g, '').replace(',', '.')) : null;\n    const newDescription = descriptionText || null;\n    \n    // Get previous data from Notion\n    const previousPrice = item.json.properties['Последняя цена']?.number || null;\n    const previousStatus = item.json.properties['Последний статус']?.rich_text?.[0]?.plain_text || '';\n    const title = item.json.properties['Название']?.title?.[0]?.plain_text || 'Без названия';\n    const url = item.json.properties['URL конкурента']?.url || '';\n    const pageId = item.json.id;\n    \n    // Check for parser errors\n    const parserError = (newPrice === null || newDescription === null);\n    \n    items.push({\n      json: {\n        title,\n        url,\n        newPrice,\n        previousPrice,\n        newDescription,\n        previousStatus,\n        pageId,\n        parserError,\n        rawHtml: html.substring(0, 500) // Keep first 500 chars for debugging\n      }\n    });\n  } catch (error) {\n    // On error, mark as parser error and continue\n    items.push({\n      json: {\n        title: item.json.properties?.['Название']?.title?.[0]?.plain_text || 'Ошибка',\n        url: item.json.properties?.['URL конкурента']?.url || '',\n        newPrice: null,\n        previousPrice: null,\n        newDescription: null,\n        previousStatus: '',\n        pageId: item.json.id,\n        parserError: true,\n        errorMessage: error.message\n      }\n    });\n  }\n}\n\nreturn items;"
+      },
+      "id": "code-extract-data",
+      "name": "Code Extract Data & Handle Errors",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calculate price difference and percentage change\nconst items = [];\n\nfor (const item of $input.all()) {\n  const { newPrice, previousPrice, parserError } = item.json;\n  \n  let priceDifference = 0;\n  let percentageChange = 0;\n  let emoji = '🟡';\n  \n  if (!parserError && newPrice !== null && previousPrice !== null && previousPrice !== 0) {\n    priceDifference = newPrice - previousPrice;\n    percentageChange = ((priceDifference / previousPrice) * 100).toFixed(2);\n    \n    // Determine emoji\n    if (priceDifference > 0) {\n      emoji = '📈'; // Price increased\n    } else if (priceDifference < 0) {\n      emoji = '📉'; // Price decreased\n    } else {\n      emoji = '🟡'; // No change\n    }\n  }\n  \n  items.push({\n    json: {\n      ...item.json,\n      priceDifference,\n      percentageChange,\n      emoji\n    }\n  });\n}\n\nreturn items;"
+      },
+      "id": "code-calculate-difference",
+      "name": "Code Calculate Price Difference",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.parserError }}",
+              "value2": false
+            }
+          ]
+        }
+      },
+      "id": "if-parser-success",
+      "name": "IF Parser Success",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "chatId": "={{ $env.DUMMY_TELEGRAM_CHAT_ID }}",
+        "text": "⚠️ Ошибка парсинга для {{ $json.title }}\\n\\nURL: {{ $json.url }}\\nОшибка: {{ $json.errorMessage || 'Не удалось извлечь цену или описание' }}"
+      },
+      "id": "telegram-parser-error",
+      "name": "Telegram Parser Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [
+        1780,
+        480
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_API",
+          "name": "Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DUMMY_WEBHOOK_B_URL || 'https://your-n8n-instance.com/webhook/rag-analysis' }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "title",
+              "value": "={{ $json.title }}"
+            },
+            {
+              "name": "url",
+              "value": "={{ $json.url }}"
+            },
+            {
+              "name": "newPrice",
+              "value": "={{ $json.newPrice }}"
+            },
+            {
+              "name": "previousPrice",
+              "value": "={{ $json.previousPrice }}"
+            },
+            {
+              "name": "newDescription",
+              "value": "={{ $json.newDescription }}"
+            },
+            {
+              "name": "previousStatus",
+              "value": "={{ $json.previousStatus }}"
+            },
+            {
+              "name": "priceDifference",
+              "value": "={{ $json.priceDifference }}"
+            },
+            {
+              "name": "percentageChange",
+              "value": "={{ $json.percentageChange }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "webhook-call-rag-agent",
+      "name": "Webhook Call RAG Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1780,
+        120
+      ],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "chatId": "={{ $env.DUMMY_TELEGRAM_CHAT_ID }}",
+        "text": "❌ Ошибка RAG Agent для {{ $json.title }}\\n\\nНе удалось получить анализ ИИ. Продолжаю без анализа."
+      },
+      "id": "telegram-rag-error",
+      "name": "Telegram RAG Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [
+        2000,
+        260
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_API",
+          "name": "Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.analysis || $json.body?.analysis || '' }}",
+              "operation": "notContains",
+              "value2": "БЕЗ ИЗМЕНЕНИЙ"
+            }
+          ]
+        }
+      },
+      "id": "if-has-changes",
+      "name": "IF Has Changes",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "chatId": "={{ $env.DUMMY_TELEGRAM_CHAT_ID }}",
+        "text": "{{ $json.emoji }} *{{ $json.title }}*\\n\\n💰 *Цена:* {{ $json.newPrice }} (было: {{ $json.previousPrice }})\\n📊 *Изменение:* {{ $json.priceDifference }} ({{ $json.percentageChange }}%)\\n\\n🔍 *AI Анализ:*\\n{{ $json.analysis || $json.body?.analysis || 'Анализ недоступен' }}\\n\\n🔗 [Перейти на сайт]({{ $json.url }})",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "telegram-detailed-report",
+      "name": "Telegram Detailed Report",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.1,
+      "position": [
+        2440,
+        20
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "TELEGRAM_API",
+          "name": "Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "page",
+        "operation": "update",
+        "pageId": "={{ $json.pageId }}",
+        "propertiesUi": {
+          "propertyValues": [
+            {
+              "key": "Последняя цена",
+              "numberValue": "={{ $json.newPrice }}"
+            },
+            {
+              "key": "Последний статус",
+              "richTextValues": [
+                {
+                  "richTextValue": "={{ $json.analysis || $json.body?.analysis || 'Обновлено' }}"
+                }
+              ]
+            },
+            {
+              "key": "Дата проверки",
+              "dateValue": "={{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "notion-update-page",
+      "name": "Notion Update Page",
+      "type": "n8n-nodes-base.notion",
+      "typeVersion": 2,
+      "position": [
+        2660,
+        120
+      ],
+      "credentials": {
+        "notionApi": {
+          "id": "NOTION_API",
+          "name": "Notion"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Workflow A: Competitor Price Scraper - MAIN\\n\\nЭтот воркфлоу выполняет:\\n1. Ежедневный мониторинг цен конкурентов\\n2. Парсинг веб-страниц\\n3. Анализ изменений с помощью AI (RAG)\\n4. Отправку уведомлений в Telegram\\n5. Обновление данных в Notion\\n\\nТребуемые переменные окружения:\\n- DUMMY_TELEGRAM_CHAT_ID\\n- DUMMY_NOTION_DB_ID\\n- DUMMY_WEBHOOK_B_URL\\n- DUMMY_CSS_SELECTOR_PRICE\\n- DUMMY_CSS_SELECTOR_DESCRIPTION",
+        "height": 400,
+        "width": 360,
+        "color": 4
+      },
+      "id": "sticky-note-info",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        180,
+        460
+      ]
+    }
+  ],
+  "connections": {
+    "Cron Trigger (Daily 10:00)": {
+      "main": [
+        [
+          {
+            "node": "Telegram Start Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Start Notification": {
+      "main": [
+        [
+          {
+            "node": "Notion Get Competitors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notion Get Competitors": {
+      "main": [
+        [
+          {
+            "node": "HTTP Fetch Competitor Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Fetch Competitor Page": {
+      "main": [
+        [
+          {
+            "node": "Code Extract Data & Handle Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code Extract Data & Handle Errors": {
+      "main": [
+        [
+          {
+            "node": "Code Calculate Price Difference",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code Calculate Price Difference": {
+      "main": [
+        [
+          {
+            "node": "IF Parser Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Parser Success": {
+      "main": [
+        [
+          {
+            "node": "Webhook Call RAG Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram Parser Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Call RAG Agent": {
+      "main": [
+        [
+          {
+            "node": "IF Has Changes",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Telegram RAG Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram RAG Error": {
+      "main": [
+        [
+          {
+            "node": "Notion Update Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Has Changes": {
+      "main": [
+        [
+          {
+            "node": "Telegram Detailed Report",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Notion Update Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Detailed Report": {
+      "main": [
+        [
+          {
+            "node": "Notion Update Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-10-07T00:00:00.000Z",
+  "versionId": "1"
+}

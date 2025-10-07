@@ -1,0 +1,408 @@
+{
+  "name": "Competitor Price Scraper - RAG API",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "rag-analysis",
+        "options": {}
+      },
+      "id": "webhook-trigger-rag",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "rag-analysis-webhook"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineOperation": "combineAll",
+        "options": {}
+      },
+      "id": "merge-data",
+      "name": "Merge Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "content-for-vectorization",
+              "name": "content",
+              "value": "=Товар: {{ $json.title }}\\nURL: {{ $json.url }}\\nТекущая цена: {{ $json.newPrice }}\\nПредыдущая цена: {{ $json.previousPrice }}\\nИзменение: {{ $json.priceDifference }} ({{ $json.percentageChange }}%)\\nОписание: {{ $json.newDescription }}\\nПредыдущий статус: {{ $json.previousStatus }}\\nДата: {{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "prepare-content",
+      "name": "Prepare Content for Vector",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        680,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "tableName": {
+          "__rl": true,
+          "value": "competitor_prices",
+          "mode": "list"
+        },
+        "dataMode": "autoMapInputData",
+        "options": {}
+      },
+      "id": "supabase-insert-record",
+      "name": "Supabase Insert Record",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        900,
+        440
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "SUPABASE_API",
+          "name": "Supabase account"
+        }
+      },
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "claude-3-5-sonnet-20241022",
+          "mode": "list",
+          "cachedResultName": "Claude 3.5 Sonnet"
+        },
+        "options": {}
+      },
+      "id": "chat-model-anthropic",
+      "name": "Chat Model Anthropic",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.8,
+      "position": [
+        1120,
+        80
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "ANTHROPIC_API",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "id": "embeddings-openai",
+      "name": "Embeddings OpenAI",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        220
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "OPENAI_API",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "load",
+        "tableName": {
+          "__rl": true,
+          "value": "competitor_prices",
+          "mode": "list"
+        },
+        "options": {
+          "queryName": "match_documents"
+        }
+      },
+      "id": "supabase-vector-store",
+      "name": "Supabase Vector Store",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1,
+      "position": [
+        1340,
+        220
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "SUPABASE_API",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "name": "historical_context",
+        "description": "Получить исторический контекст цен и изменений для данного товара/конкурента"
+      },
+      "id": "vector-tool",
+      "name": "Vector Store Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolVectorStore",
+      "typeVersion": 1.1,
+      "position": [
+        1560,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $json.title }}",
+        "contextWindowLength": 5
+      },
+      "id": "window-memory",
+      "name": "Window Buffer Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        1560,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Проанализируй следующие данные о товаре конкурента:\\n\\n**Товар:** {{ $json.title }}\\n**URL:** {{ $json.url }}\\n**Текущая цена:** {{ $json.newPrice }}\\n**Предыдущая цена:** {{ $json.previousPrice }}\\n**Изменение цены:** {{ $json.priceDifference }} ({{ $json.percentageChange }}%)\\n**Новое описание:** {{ $json.newDescription }}\\n**Предыдущий статус:** {{ $json.previousStatus }}\\n\\nИспользуй доступный исторический контекст из векторной базы данных для более глубокого анализа. \\n\\nЗадачи:\\n1. Определи, есть ли значимые изменения в цене или описании товара\\n2. Если изменение цены больше ±5% или есть важные изменения в описании - предоставь детальный анализ\\n3. Если изменения незначительные - ответь ТОЛЬКО текстом: \"БЕЗ ИЗМЕНЕНИЙ\"\\n\\nФормат ответа при наличии изменений:\\n- Краткое резюме изменения (1-2 предложения)\\n- Возможные причины (если применимо)\\n- Рекомендации по реагированию",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "Ты — профессиональный аналитик цен конкурентов. Твоя задача — анализировать данные о ценах и описаниях товаров, используя исторический контекст из векторной базы данных.\\n\\nПравила:\\n1. Используй векторную базу данных для получения исторического контекста\\n2. Если изменение цены меньше ±5% И нет важных изменений в описании - отвечай ТОЛЬКО: \\\"БЕЗ ИЗМЕНЕНИЙ\\\"\\n3. При значимых изменениях предоставляй краткий и содержательный анализ\\n4. Будь конкретным и actionable в рекомендациях\\n5. Отвечай на русском языке"
+        }
+      },
+      "id": "rag-agent",
+      "name": "RAG Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        1780,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "analysis-result",
+              "name": "analysis",
+              "value": "={{ $json.output }}",
+              "type": "string"
+            },
+            {
+              "id": "title-passthrough",
+              "name": "title",
+              "value": "={{ $('Webhook Trigger').item.json.title }}",
+              "type": "string"
+            },
+            {
+              "id": "price-passthrough",
+              "name": "newPrice",
+              "value": "={{ $('Webhook Trigger').item.json.newPrice }}",
+              "type": "number"
+            },
+            {
+              "id": "previous-price-passthrough",
+              "name": "previousPrice",
+              "value": "={{ $('Webhook Trigger').item.json.previousPrice }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "prepare-response",
+      "name": "Prepare Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2000,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "respond-to-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Workflow B: RAG API\\n\\nЭтот воркфлоу обрабатывает запросы от Workflow A:\\n1. Получает данные через Webhook\\n2. Векторизует и сохраняет в Supabase\\n3. Запрашивает релевантный контекст\\n4. Использует AI (Claude) для анализа\\n5. Возвращает результат анализа\\n\\nТребуемые credentials:\\n- ANTHROPIC_API\\n- OPENAI_API\\n- SUPABASE_API\\n\\nВажно: Webhook URL этого воркфлоу\\nнужно указать в переменной\\nDUMMY_WEBHOOK_B_URL\\nв Workflow A",
+        "height": 380,
+        "width": 320,
+        "color": 5
+      },
+      "id": "sticky-note-info",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        180,
+        440
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Merge Data",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Data",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Data": {
+      "main": [
+        [
+          {
+            "node": "Prepare Content for Vector",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Content for Vector": {
+      "main": [
+        [
+          {
+            "node": "Supabase Insert Record",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "RAG Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat Model Anthropic": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "RAG Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings OpenAI": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Supabase Vector Store",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase Vector Store": {
+      "ai_vectorStore": [
+        [
+          {
+            "node": "Vector Store Tool",
+            "type": "ai_vectorStore",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vector Store Tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "RAG Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Window Buffer Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "RAG Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RAG Agent": {
+      "main": [
+        [
+          {
+            "node": "Prepare Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 1,
+  "updatedAt": "2025-10-07T00:00:00.000Z",
+  "versionId": "1"
+}
