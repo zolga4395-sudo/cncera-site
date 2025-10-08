@@ -1,0 +1,1160 @@
+{
+  "name": "Combined_RSS_VisaMonitor_Supabase",
+  "nodes": [
+    {
+      "id": "sched-rss",
+      "name": "Запуск по расписанию (RSS)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-940, 220],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "rss-reader",
+      "name": "RSS Reader",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1,
+      "position": [-740, 220],
+      "parameters": {
+        "url": "https://example.com/rss",
+        "options": {}
+      }
+    },
+    {
+      "id": "supabase-check-processed",
+      "name": "Supabase: Проверка обработанных",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-540, 220],
+      "parameters": {
+        "url": "=https://emhmgaussusepxubimvo.supabase.co/rest/v1/processed_urls?url=eq.{{ $json.link }}",
+        "method": "GET",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtaG1nYXVzc3VzZXB4dWJpbXZvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk4MjkyNjEsImV4cCI6MjA3NTQwNTI2MX0.RNfKRTqhDNB_wBAVlQlLB6dhmoO9I_ypzEQdiKq_fBs"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtaG1nYXVzc3VzZXB4dWJpbXZvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTk4MjkyNjEsImV4cCI6MjA3NTQwNTI2MX0.RNfKRTqhDNB_wBAVlQlLB6dhmoO9I_ypzEQdiKq_fBs"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "if-not-processed",
+      "name": "Если не обработан (len==0)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-340, 220],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ Array.isArray($json) ? $json.length : 0 }}",
+              "rightValue": "0",
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "set-vars",
+      "name": "Установка переменных",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-140, 140],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "url_site",
+              "value": "={{ $json.link }}",
+              "type": "string"
+            },
+            {
+              "name": "article_title",
+              "value": "={{ $json.title }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "firecrawl-scrape",
+      "name": "Firecrawl: Парсинг страницы",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [60, 30],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.firecrawl.dev/v1/scrape",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer fc-b03e8ca9034a4226bc67449537da847e"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"url\": \"{{ $json.url_site }}\", \"formats\": [\"markdown\", \"screenshot\"], \"onlyMainContent\": true, \"waitFor\": 3000, \"timeout\": 60000 }",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "extract-contacts",
+      "name": "Извлечение контактов",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [280, -40],
+      "parameters": {
+        "jsCode": "const data = $input.first().json?.data || {};\nconst markdown = data.markdown || '';\nconst screenshot = data.screenshot || '';\n\nconst contacts = {\n  emails: [],\n  phones: [],\n  social: {\n    telegram: [],\n    whatsapp: [],\n    instagram: [],\n    facebook: [],\n    linkedin: []\n  }\n};\n\nconst emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/g;\nconst emails = markdown.match(emailRegex) || [];\ncontacts.emails = [...new Set(emails)];\n\nconst phoneRegex = /(?:\\+\\d{1,3})?[\\s.-]?\\(?\\d{1,4}\\)?[\\s.-]?\\d{1,4}[\\s.-]?\\d{1,4}[\\s.-]?\\d{1,9}/g;\nconst phones = markdown.match(phoneRegex) || [];\ncontacts.phones = [...new Set(phones.filter(p => p.replace(/\\D/g, '').length >= 10))];\n\nconst tg = /(?:t\\.me\\/|@)([a-zA-Z0-9_]{5,32})/g;\nconst wa = /(?:wa\\.me\\/|whatsapp\\.com\\/)([0-9]{10,15})/g;\nconst ig = /(?:instagram\\.com\\/)([a-zA-Z0-9_.]+)/g;\nconst fb = /(?:facebook\\.com\\/)([a-zA-Z0-9.]+)/g;\nconst li = /(?:linkedin\\.com\\/in\\/)([a-zA-Z0-9-]+)/g;\n\ncontacts.social.telegram = [...new Set([...markdown.matchAll(tg)].map(m => m[1]))];\ncontacts.social.whatsapp = [...new Set([...markdown.matchAll(wa)].map(m => m[1]))];\ncontacts.social.instagram = [...new Set([...markdown.matchAll(ig)].map(m => m[1]))];\ncontacts.social.facebook = [...new Set([...markdown.matchAll(fb)].map(m => m[1]))];\ncontacts.social.linkedin = [...new Set([...markdown.matchAll(li)].map(m => m[1]))];\n\nreturn {\n  ...contacts,\n  markdown,\n  screenshot,\n  url_site: $input.first().json.url_site\n};"
+      }
+    },
+    {
+      "id": "create-post",
+      "name": "Создать пост (Форматирование)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [520, -40],
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst markdown = data.markdown || '';\nconst emails = data.emails || [];\nconst phones = data.phones || [];\nconst social = data.social || {};\n\n// Формируем пост\nlet post = '<b>📰 Новость:</b>\\n';\npost += markdown.substring(0, 300).trim() + '...\\n\\n';\n\nif (emails.length > 0 || phones.length > 0 || Object.values(social).some(arr => arr.length > 0)) {\n  post += '<b>📞 Контакты:</b>\\n';\n  \n  if (emails.length > 0) {\n    post += '📧 Email: ' + emails.slice(0, 2).join(', ') + '\\n';\n  }\n  \n  if (phones.length > 0) {\n    post += '☎️ Телефон: ' + phones.slice(0, 2).join(', ') + '\\n';\n  }\n  \n  if (social.telegram && social.telegram.length > 0) {\n    post += '✈️ Telegram: @' + social.telegram.slice(0, 2).join(', @') + '\\n';\n  }\n  \n  if (social.whatsapp && social.whatsapp.length > 0) {\n    post += '💬 WhatsApp: ' + social.whatsapp.slice(0, 1).join(', ') + '\\n';\n  }\n}\n\npost += '\\n💾 Сохрани полезное!';\n\n// Ограничиваем длину\nif (post.length > 1000) {\n  post = post.substring(0, 997) + '...';\n}\n\nreturn {\n  text: post,\n  screenshot: data.screenshot,\n  url_site: data.url_site\n};"
+      }
+    },
+    {
+      "id": "get-screenshot",
+      "name": "Получить скриншот",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [280, 110],
+      "parameters": {
+        "url": "={{ $json.screenshot }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "merge-rss",
+      "name": "Объединение данных",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [720, 110],
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll"
+      }
+    },
+    {
+      "id": "telegram-send-photo",
+      "name": "Отправить в Telegram (RSS)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 110],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot8374022565:AAHKrLFwzCEGnnJNFZRyJQnT1-qENUsARnI/sendPhoto",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "@YOUR_CHANNEL_USERNAME"
+            },
+            {
+              "name": "caption",
+              "value": "={{ $json.text }}"
+            },
+            {
+              "name": "parse_mode",
+              "value": "HTML"
+            },
+            {
+              "name": "photo",
+              "value": "={{ $json.screenshot }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "supabase-save-processed",
+      "name": "Supabase: Сохранить обработанный",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1100, 110],
+      "parameters": {
+        "method": "POST",
+        "url": "https://emhmgaussusepxubimvo.supabase.co/rest/v1/processed_urls",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtaG1nYXVzc3VzZXB4dWJpbXZvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1OTgyOTI2MSwiZXhwIjoyMDc1NDA1MjYxfQ.fjcvBmuSqUHvrexuUdZDiuCdCOzQeuFn8dKbiGtVtW0"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtaG1nYXVzc3VzZXB4dWJpbXZvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1OTgyOTI2MSwiZXhwIjoyMDc1NDA1MjYxfQ.fjcvBmuSqUHvrexuUdZDiuCdCOzQeuFn8dKbiGtVtW0"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"url\": \"{{ $json.url_site }}\", \"processed_at\": \"{{ new Date().toISOString() }}\", \"post_text\": \"{{ ($json.text || '').replace(/\"/g, '\\\\\"') }}\" }"
+      }
+    },
+    {
+      "id": "webhook-telegram",
+      "name": "Webhook /telegram",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-940, 560],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram",
+        "responseMode": "onReceived",
+        "responseData": "allEntries"
+      }
+    },
+    {
+      "id": "code-parse-command",
+      "name": "Определить команду /visa",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-740, 560],
+      "parameters": {
+        "jsCode": "const msg = $json.message || {};\nconst text = (msg.text || '').trim();\nconst chatId = msg.chat?.id;\n\nif (!text.toLowerCase().startsWith('/visa')) {\n  return { skip: true, chatId };\n}\n\nconst parts = text.split(' ').filter(Boolean);\nconst query = parts.slice(1).join(' ').trim();\n\nreturn {\n  skip: false,\n  chatId,\n  query\n};"
+      }
+    },
+    {
+      "id": "if-skip",
+      "name": "IF: не /visa → стоп",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-560, 560],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "telegram-tip",
+      "name": "Подсказка формата",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-560, 720],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot8374022565:AAHKrLFwzCEGnnJNFZRyJQnT1-qENUsARnI/sendMessage",
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $json.chatId }}"
+            },
+            {
+              "name": "text",
+              "value": "Отправьте запрос в формате: /visa <страна> <город>\\nНапример: /visa Польша Ташкент"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "if-has-query",
+      "name": "IF: есть query?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-360, 560],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.query || '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "set-search-query",
+      "name": "Сформировать поисковый запрос",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-160, 560],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "chatId",
+              "value": "={{ $json.chatId }}",
+              "type": "string"
+            },
+            {
+              "name": "query",
+              "value": "={{ $json.query }}",
+              "type": "string"
+            },
+            {
+              "name": "searchQuery",
+              "value": "=посольство OR визовый центр {{ $json.query || '' }} site:uz",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "firecrawl-search",
+      "name": "Firecrawl: Поиск посольств",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [40, 560],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.firecrawl.dev/v1/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer fc-b03e8ca9034a4226bc67449537da847e"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"query\": \"{{ $json.searchQuery }}\", \"limit\": 5 }",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-pick-url",
+      "name": "Выбрать лучший URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [240, 560],
+      "parameters": {
+        "jsCode": "const res = $input.first().json || {};\nconst items = res.data || res.results || [];\n\nif (!Array.isArray(items) || items.length === 0) {\n  return {\n    found: false,\n    chatId: $input.first().json.chatId,\n    query: $input.first().json.query\n  };\n}\n\nconst score = u => {\n  const url = (u.url || u.link || '').toLowerCase();\n  let s = 0;\n  if (url.includes('.uz')) s += 3;\n  if (url.includes('vfsglobal')) s += 3;\n  if (url.includes('visametric')) s += 3;\n  if (url.includes('embassy') || url.includes('mfa')) s += 2;\n  if (url.includes('consulate')) s += 2;\n  return {\n    url: url.startsWith('http') ? (u.url || u.link) : ('https://' + (u.url || u.link)),\n    s\n  };\n};\n\nconst ranked = items.map(score).filter(x => x.url).sort((a, b) => b.s - a.s);\n\nreturn {\n  found: true,\n  url: ranked[0].url,\n  chatId: $input.first().json.chatId,\n  query: $input.first().json.query\n};"
+      }
+    },
+    {
+      "id": "if-found-url",
+      "name": "IF: найден URL?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [440, 560],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.found }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "scrape-embassy",
+      "name": "Firecrawl: Страница посольства",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [640, 500],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.firecrawl.dev/v1/scrape",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer fc-b03e8ca9034a4226bc67449537da847e"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"url\": \"{{ $json.url }}\", \"formats\": [\"markdown\"], \"onlyMainContent\": true, \"waitFor\": 2500, \"timeout\": 45000 }",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-check-slots",
+      "name": "Проверка наличия слотов",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [840, 500],
+      "parameters": {
+        "jsCode": "const md = $input.first().json?.data?.markdown || '';\nconst yes = /(appointment|book|signup|enroll|next\\s+date|available|open\\s*slot|запись|доступн|свободн)/i.test(md);\n\nreturn {\n  hasSlots: !!yes,\n  url: $input.first().json.url,\n  chatId: $input.first().json.chatId,\n  query: $input.first().json.query\n};"
+      }
+    },
+    {
+      "id": "telegram-answer",
+      "name": "Ответ пользователю",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1040, 500],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot8374022565:AAHKrLFwzCEGnnJNFZRyJQnT1-qENUsARnI/sendMessage",
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $json.chatId }}"
+            },
+            {
+              "name": "parse_mode",
+              "value": "HTML"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.hasSlots ? ('✅ Найдены свободные окна\\n🔗 ' + $json.url) : ('❌ Пока нет доступных дат. Я буду проверять каждые 3 часа и сообщу.') }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "supabase-upsert-subscriber",
+      "name": "Supabase: подписать пользователя",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1240, 500],
+      "parameters": {
+        "method": "POST",
+        "url": "https://emhmgaussusepxubimvo.supabase.co/rest/v1/visa_subscribers",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtaG1nYXVzc3VzZXB4dWJpbXZvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1OTgyOTI2MSwiZXhwIjoyMDc1NDA1MjYxfQ.fjcvBmuSqUHvrexuUdZDiuCdCOzQeuFn8dKbiGtVtW0"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtaG1nYXVzc3VzZXB4dWJpbXZvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1OTgyOTI2MSwiZXhwIjoyMDc1NDA1MjYxfQ.fjcvBmuSqUHvrexuUdZDiuCdCOzQeuFn8dKbiGtVtW0"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"user_id\": \"{{ $json.chatId }}\", \"query\": \"{{ $json.query || '' }}\", \"subscribed_at\": \"{{ new Date().toISOString() }}\" }"
+      }
+    },
+    {
+      "id": "sched-visa",
+      "name": "Расписание (визовый мониторинг, каждые 3 ч)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-940, 910],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "supabase-get-subs",
+      "name": "Supabase: получить подписчиков",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-740, 910],
+      "parameters": {
+        "method": "GET",
+        "url": "https://emhmgaussusepxubimvo.supabase.co/rest/v1/visa_subscribers",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtaG1nYXVzc3VzZXB4dWJpbXZvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1OTgyOTI2MSwiZXhwIjoyMDc1NDA1MjYxfQ.fjcvBmuSqUHvrexuUdZDiuCdCOzQeuFn8dKbiGtVtW0"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVtaG1nYXVzc3VzZXB4dWJpbXZvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1OTgyOTI2MSwiZXhwIjoyMDc1NDA1MjYxfQ.fjcvBmuSqUHvrexuUdZDiuCdCOzQeuFn8dKbiGtVtW0"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "split-subs",
+      "name": "Split In Batches (подписчики)",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [-540, 910],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "set-monitor-query",
+      "name": "Сформировать поисковый запрос (Cron)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-340, 910],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "name": "chatId",
+              "value": "={{ $json.user_id }}",
+              "type": "string"
+            },
+            {
+              "name": "query",
+              "value": "={{ $json.query }}",
+              "type": "string"
+            },
+            {
+              "name": "searchQuery",
+              "value": "=посольство OR визовый центр {{ $json.query || '' }} site:uz",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "firecrawl-search-cron",
+      "name": "Firecrawl: Поиск (Cron)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-140, 910],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.firecrawl.dev/v1/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer fc-b03e8ca9034a4226bc67449537da847e"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"query\": \"{{ $json.searchQuery }}\", \"limit\": 5 }",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "code-pick-url-cron",
+      "name": "Выбрать URL (Cron)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [60, 910],
+      "parameters": {
+        "jsCode": "const res = $input.first().json || {};\nconst items = res.data || res.results || [];\n\nif (!Array.isArray(items) || items.length === 0) {\n  return {\n    found: false,\n    chatId: $input.first().json.chatId,\n    query: $input.first().json.query\n  };\n}\n\nconst score = u => {\n  const url = (u.url || u.link || '').toLowerCase();\n  let s = 0;\n  if (url.includes('.uz')) s += 3;\n  if (url.includes('vfsglobal')) s += 3;\n  if (url.includes('visametric')) s += 3;\n  if (url.includes('embassy') || url.includes('mfa')) s += 2;\n  if (url.includes('consulate')) s += 2;\n  return {\n    url: url.startsWith('http') ? (u.url || u.link) : ('https://' + (u.url || u.link)),\n    s\n  };\n};\n\nconst ranked = items.map(score).filter(x => x.url).sort((a, b) => b.s - a.s);\n\nreturn {\n  found: true,\n  url: ranked[0].url,\n  chatId: $input.first().json.chatId,\n  query: $input.first().json.query\n};"
+      }
+    },
+    {
+      "id": "scrape-embassy-cron",
+      "name": "Firecrawl: Страница (Cron)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [260, 910],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.firecrawl.dev/v1/scrape",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer fc-b03e8ca9034a4226bc67449537da847e"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"url\": \"{{ $json.url }}\", \"formats\": [\"markdown\"], \"onlyMainContent\": true, \"waitFor\": 2500, \"timeout\": 45000 }",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "check-slots-cron",
+      "name": "Проверка слотов (Cron)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 910],
+      "parameters": {
+        "jsCode": "const md = $input.first().json?.data?.markdown || '';\nconst yes = /(appointment|book|signup|enroll|next\\s+date|available|open\\s*slot|запись|доступн|свободн)/i.test(md);\n\nreturn {\n  hasSlots: !!yes,\n  url: $input.first().json.url,\n  chatId: $input.first().json.chatId,\n  query: $input.first().json.query\n};"
+      }
+    },
+    {
+      "id": "send-telegram-cron",
+      "name": "Уведомление (Cron)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [660, 910],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot8374022565:AAHKrLFwzCEGnnJNFZRyJQnT1-qENUsARnI/sendMessage",
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chat_id",
+              "value": "={{ $json.chatId }}"
+            },
+            {
+              "name": "parse_mode",
+              "value": "HTML"
+            },
+            {
+              "name": "text",
+              "value": "={{ $json.hasSlots ? ('✅ Найдены свободные окна\\n🔗 ' + $json.url) : '(авто) Пока нет доступных дат' }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "batches-continue",
+      "name": "Next Batch",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [860, 910],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Запуск по расписанию (RSS)": {
+      "main": [
+        [
+          {
+            "node": "RSS Reader",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RSS Reader": {
+      "main": [
+        [
+          {
+            "node": "Supabase: Проверка обработанных",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase: Проверка обработанных": {
+      "main": [
+        [
+          {
+            "node": "Если не обработан (len==0)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Если не обработан (len==0)": {
+      "main": [
+        [
+          {
+            "node": "Установка переменных",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Установка переменных": {
+      "main": [
+        [
+          {
+            "node": "Firecrawl: Парсинг страницы",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Firecrawl: Парсинг страницы": {
+      "main": [
+        [
+          {
+            "node": "Извлечение контактов",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Получить скриншот",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Извлечение контактов": {
+      "main": [
+        [
+          {
+            "node": "Создать пост (Форматирование)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Создать пост (Форматирование)": {
+      "main": [
+        [
+          {
+            "node": "Объединение данных",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Получить скриншот": {
+      "main": [
+        [
+          {
+            "node": "Объединение данных",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Объединение данных": {
+      "main": [
+        [
+          {
+            "node": "Отправить в Telegram (RSS)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Отправить в Telegram (RSS)": {
+      "main": [
+        [
+          {
+            "node": "Supabase: Сохранить обработанный",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook /telegram": {
+      "main": [
+        [
+          {
+            "node": "Определить команду /visa",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Определить команду /visa": {
+      "main": [
+        [
+          {
+            "node": "IF: не /visa → стоп",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: не /visa → стоп": {
+      "main": [
+        [
+          {
+            "node": "Подсказка формата",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "IF: есть query?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: есть query?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Сформировать поисковый запрос",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Сформировать поисковый запрос": {
+      "main": [
+        [
+          {
+            "node": "Firecrawl: Поиск посольств",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Firecrawl: Поиск посольств": {
+      "main": [
+        [
+          {
+            "node": "Выбрать лучший URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Выбрать лучший URL": {
+      "main": [
+        [
+          {
+            "node": "IF: найден URL?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: найден URL?": {
+      "main": [
+        [
+          {
+            "node": "Firecrawl: Страница посольства",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Firecrawl: Страница посольства": {
+      "main": [
+        [
+          {
+            "node": "Проверка наличия слотов",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Проверка наличия слотов": {
+      "main": [
+        [
+          {
+            "node": "Ответ пользователю",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ответ пользователю": {
+      "main": [
+        [
+          {
+            "node": "Supabase: подписать пользователя",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Расписание (визовый мониторинг, каждые 3 ч)": {
+      "main": [
+        [
+          {
+            "node": "Supabase: получить подписчиков",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase: получить подписчиков": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches (подписчики)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split In Batches (подписчики)": {
+      "main": [
+        [
+          {
+            "node": "Сформировать поисковый запрос (Cron)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Сформировать поисковый запрос (Cron)": {
+      "main": [
+        [
+          {
+            "node": "Firecrawl: Поиск (Cron)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Firecrawl: Поиск (Cron)": {
+      "main": [
+        [
+          {
+            "node": "Выбрать URL (Cron)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Выбрать URL (Cron)": {
+      "main": [
+        [
+          {
+            "node": "Firecrawl: Страница (Cron)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Firecrawl: Страница (Cron)": {
+      "main": [
+        [
+          {
+            "node": "Проверка слотов (Cron)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Проверка слотов (Cron)": {
+      "main": [
+        [
+          {
+            "node": "Уведомление (Cron)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Уведомление (Cron)": {
+      "main": [
+        [
+          {
+            "node": "Next Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Next Batch": {
+      "main": [
+        [
+          {
+            "node": "Split In Batches (подписчики)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "v1.0.0"
+}
